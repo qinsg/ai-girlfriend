@@ -10,6 +10,7 @@ set +a
 avatar_port="${AVATAR_PORT:-9871}"
 avatar_profile="${AVATAR_MLX_PROFILE:-quality}"
 runtime_dir="$PWD/.runtime/fasterliveportrait-mlx"
+musetalk_runtime_dir="$PWD/.runtime/musetalk-mlx"
 checkpoint_dir="$PWD/models/avatar/checkpoints"
 musetalk_model_dir="$PWD/models/avatar/musetalk-1.5-fp16"
 
@@ -23,7 +24,22 @@ if curl -fsS "http://127.0.0.1:${avatar_port}/health" >/dev/null 2>&1; then
   exit 1
 fi
 
-[[ -x "$runtime_dir/.venv/bin/python" ]] || ./scripts/bootstrap-avatar-macos.sh
+if [[ ! -x "$runtime_dir/.venv/bin/python" \
+  || ! -d "$musetalk_runtime_dir/.git" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/warping_module.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/spade_generator.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/landmark.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/appearance_feature_extractor.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/motion_extractor.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/stitching.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/stitching_eye.npz" \
+  || ! -f "$checkpoint_dir/liveportrait_mlx/stitching_lip.npz" \
+  || ! -f "$musetalk_model_dir/config.json" \
+  || ! -f "$musetalk_model_dir/unet.safetensors" \
+  || ! -f "$musetalk_model_dir/vae.safetensors" \
+  || ! -f "$musetalk_model_dir/whisper_encoder.safetensors" ]]; then
+  ./scripts/bootstrap-avatar-macos.sh
+fi
 mkdir -p logs .runtime/avatar-jobs
 
 if [[ -f logs/avatar.pid ]]; then
