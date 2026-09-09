@@ -16,6 +16,90 @@ demo_auth = importlib.import_module("auth")
 demo_server = importlib.import_module("server")
 
 
+async def test_avatar_idle_proxies_browser_range_requests(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return httpx.Response(
+                206,
+                content=b"idle-range",
+                headers={
+                    "Content-Type": "video/mp4",
+                    "Content-Range": "bytes 0-9/100",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": "10",
+                },
+            )
+
+    request = SimpleNamespace(headers={"range": "bytes=0-9"})
+    monkeypatch.setattr(demo_server, "AVATAR_URL", "http://host.docker.internal:9871")
+    monkeypatch.setattr(demo_server.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await demo_server.avatar_idle("xiaoman", request)
+
+    assert response.status_code == 206
+    assert response.body == b"idle-range"
+    assert response.headers["content-range"] == "bytes 0-9/100"
+    assert response.headers["accept-ranges"] == "bytes"
+    assert calls[1] == (
+        "http://host.docker.internal:9871/idle/xiaoman",
+        {"headers": {"Range": "bytes=0-9"}},
+    )
+
+
+async def test_avatar_lipsync_proxies_chunk_position_headers(monkeypatch):
+    calls = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return httpx.Response(
+                200,
+                content=b"lip-chunk",
+                headers={
+                    "X-Avatar-Render-Seconds": "0.820",
+                    "X-Avatar-Start-Frame": "42",
+                    "X-Avatar-Next-Frame": "67",
+                    "X-Avatar-Frame-Count": "25",
+                },
+            )
+
+    class FakeRequest:
+        async def body(self):
+            return b"RIFF-avatar-test"
+
+    monkeypatch.setattr(demo_server, "AVATAR_URL", "http://host.docker.internal:9871")
+    monkeypatch.setattr(demo_server.httpx, "AsyncClient", FakeAsyncClient)
+
+    response = await demo_server.avatar_lipsync(FakeRequest(), character="xiaoxue", start_frame=42)
+
+    assert response.body == b"lip-chunk"
+    assert response.headers["x-avatar-next-frame"] == "67"
+    assert response.headers["x-avatar-frame-count"] == "25"
+    assert calls[1][0] == "http://host.docker.internal:9871/lipsync"
+    assert calls[1][1]["params"] == {"character": "xiaoxue", "start_frame": 42}
+
+
 def _mock_whoami(monkeypatch, payload):
     calls = []
 

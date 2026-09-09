@@ -9,6 +9,7 @@ services:
       - "127.0.0.1:${DEMO_PORT:-7860}:7860"
     environment:
       SPEECH_TO_SPEECH_URL: ws://localhost:${REALTIME_PORT:-8765}/v1/realtime
+      AVATAR_URL: ${AVATAR_URL-http://host.docker.internal:${AVATAR_PORT:-9871}}
       STARTUP_GREETING: ${STARTUP_GREETING:-请以角色身份自然地用一句中文向用户打招呼。}
       ENABLE_WEBRTC: "false"
     volumes:

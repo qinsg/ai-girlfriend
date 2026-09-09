@@ -41,6 +41,7 @@
  * @property {ToolDef[]} [tools]
  * @property {NoiseGate} [noiseGate]
  * @property {string} [audioOutputId]
+ * @property {boolean} [deferOutputAudio]
  * @property {(call: {name: string, arguments: string, callId: string}) => Promise<{output: string, image?: string}>} [executeTool]
  */
 
@@ -49,17 +50,44 @@ import { OrbVisualiser, VIS_FFT_SIZE } from "./ws/orb-visualizer.js";
 import { SentAudioRecorder } from "./ws/user-audio-recorder.js";
 
 export const AUDIO_SAMPLE_RATE = 24_000;
-export const AUDIO_WORKLET_VERSION = "audio-24k-v3";
+export const AUDIO_WORKLET_VERSION = "audio-24k-v5";
 const MIC_CHUNK_MS = 40;
 const CAPTURE_CONFIG_TIMEOUT_MS = 2_000;
 const SPEAKING_OPEN_DB = -50;
 const SPEAKING_HANG_MS = 250;
+const DEFERRED_CHUNK_BYTES = AUDIO_SAMPLE_RATE * 2;
 
 /** @param {string} name @param {URL} base */
 export function versionedAudioWorkletUrl(name, base) {
   const url = new URL(name, base);
   url.searchParams.set("v", AUDIO_WORKLET_VERSION);
   return url.href;
+}
+
+/** Convert raw little-endian PCM16 chunks into one browser-uploadable WAV. */
+export function pcm16ToWavBlob(pcm, sampleRate = AUDIO_SAMPLE_RATE) {
+  const data = new Uint8Array(pcm);
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const write = (offset, value) => {
+    for (let index = 0; index < value.length; index += 1) {
+      view.setUint8(offset + index, value.charCodeAt(index));
+    }
+  };
+  write(0, "RIFF");
+  view.setUint32(4, 36 + data.byteLength, true);
+  write(8, "WAVE");
+  write(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  write(36, "data");
+  view.setUint32(40, data.byteLength, true);
+  return new Blob([header, data], { type: "audio/wav" });
 }
 
 /** @param {string} message @param {string} code @param {object} [extra] */
@@ -109,6 +137,9 @@ export class S2sRealtimeClient extends EventTarget {
     this._captureKeepAlive = null;
     this._playbackNode = null;
     this._playbackFrames = 0;
+    this._deferOutputAudio = options.deferOutputAudio ?? false;
+    this._deferredAudioByResponse = new Map();
+    this._deferredChunkIndex = new Map();
     this._micAnalyser = null;
     this._outAnalyser = null;
     this._remoteSrc = null;
@@ -423,13 +454,23 @@ export class S2sRealtimeClient extends EventTarget {
     // prompt. Keep the PCM queued, try a best-effort resume, and tell the UI
     // when a fresh user gesture is required.
     if (this._ctx?.state === "suspended") void this._ctx.resume().catch(() => {});
-    const view = new DataView(event.data);
-    const samples = new Float32Array(event.data.byteLength / 2);
-    for (let i = 0; i < samples.length; i += 1) {
-      const sample = view.getInt16(i * 2, true);
-      samples[i] = sample < 0 ? sample / 0x8000 : sample / 0x7fff;
+    const responseId = event.responseId || this._activeResponseId || "response";
+    if (this._deferOutputAudio) {
+      const previous = this._deferredAudioByResponse.get(responseId) || new Uint8Array(0);
+      const incoming = new Uint8Array(event.data);
+      const combined = new Uint8Array(previous.byteLength + incoming.byteLength);
+      combined.set(previous, 0);
+      combined.set(incoming, previous.byteLength);
+      let offset = 0;
+      while (combined.byteLength - offset >= DEFERRED_CHUNK_BYTES) {
+        const pcm = combined.slice(offset, offset + DEFERRED_CHUNK_BYTES).buffer;
+        this._emitDeferredAudioChunk(responseId, pcm, false);
+        offset += DEFERRED_CHUNK_BYTES;
+      }
+      this._deferredAudioByResponse.set(responseId, combined.slice(offset));
+    } else {
+      this.playPcm16(event.data);
     }
-    this._playbackNode.port.postMessage({ kind: "audio", samples }, [samples.buffer]);
     this.dispatchEvent(new CustomEvent("audio-state", { detail: {
       state: this._ctx?.state || "closed",
       queuedMs: 0,
@@ -441,8 +482,38 @@ export class S2sRealtimeClient extends EventTarget {
     this._markAudible();
   }
 
+  /** @param {string} responseId @param {ArrayBuffer} pcm @param {boolean} final */
+  _emitDeferredAudioChunk(responseId, pcm, final) {
+    if (!pcm.byteLength) return;
+    const chunkIndex = this._deferredChunkIndex.get(responseId) || 0;
+    this._deferredChunkIndex.set(responseId, chunkIndex + 1);
+    this.dispatchEvent(new CustomEvent("output-audio-chunk", { detail: {
+      responseId,
+      chunkIndex,
+      final,
+      pcm,
+      audio: pcm16ToWavBlob(pcm),
+    } }));
+  }
+
+  /** Queue a PCM16 response for immediate worklet playback. */
+  playPcm16(pcm) {
+    if (!this._playbackNode || !pcm?.byteLength) return;
+    if (this._ctx?.state === "suspended") void this._ctx.resume().catch(() => {});
+    const view = new DataView(pcm);
+    const samples = new Float32Array(pcm.byteLength / 2);
+    for (let i = 0; i < samples.length; i += 1) {
+      const sample = view.getInt16(i * 2, true);
+      samples[i] = sample < 0 ? sample / 0x8000 : sample / 0x7fff;
+    }
+    this._playbackNode.port.postMessage({ kind: "audio", samples }, [samples.buffer]);
+  }
+
   _clearPlayback() {
     this._playbackNode?.port.postMessage({ kind: "clear" });
+    this._deferredAudioByResponse.clear();
+    this._deferredChunkIndex.clear();
+    this.dispatchEvent(new CustomEvent("audio-interrupted"));
     this._aiSpeaking = false;
   }
 
@@ -581,6 +652,15 @@ export class S2sRealtimeClient extends EventTarget {
         this._aiSpeaking = false;
         if (this._status === "ai-speaking" || this._status === "processing") this._setStatus("connected");
         const transcript = extractResponseTranscript(event.response) || this._asstDisplay(responseId) || "";
+        const deferred = this._deferredAudioByResponse.get(responseId)
+          || this._deferredAudioByResponse.get("response")
+          || new Uint8Array(0);
+        this._deferredAudioByResponse.delete(responseId);
+        this._deferredAudioByResponse.delete("response");
+        if (deferred.byteLength) this._emitDeferredAudioChunk(responseId, deferred.buffer, true);
+        this.dispatchEvent(new CustomEvent("output-audio-stream-end", { detail: { responseId } }));
+        this._deferredChunkIndex.delete(responseId);
+        this._deferredChunkIndex.delete("response");
         this.dispatchEvent(new CustomEvent("response-finished", { detail: {
           responseId,
           status: event.response?.status ?? "completed",
@@ -855,6 +935,7 @@ export class S2sRealtimeClient extends EventTarget {
     this._session?.close();
     this._session = null;
     this._transport = null;
+    this._deferredAudioByResponse.clear();
     for (const node of [this._captureNode, this._captureKeepAlive, this._playbackNode, this._micSrc, this._micAnalyser, this._remoteSrc, this._outAnalyser]) {
       try { node?.disconnect(); } catch { /* ignored */ }
     }

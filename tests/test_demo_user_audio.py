@@ -272,12 +272,74 @@ def test_audio_asset_version_propagates_to_the_worklets():
     main = (REPO_ROOT / "demo/main.js").read_text()
     client = (REPO_ROOT / "demo/s2s-realtime-client.js").read_text()
 
-    version = "audio-24k-v1"
+    version = "audio-24k-v5"
     assert f"main.js?v={version}" in index
     assert f"s2s-realtime-client.js?v={version}" in main
     assert f'AUDIO_WORKLET_VERSION = "{version}"' in client
     assert 'versionedAudioWorkletUrl("mic-capture.js", base)' in client
     assert 'versionedAudioWorkletUrl("audio-playback.js", base)' in client
+
+
+def test_deferred_assistant_audio_streams_one_second_wav_chunks_for_avatar():
+    _run_node(
+        """
+globalThis.localStorage = { getItem() { return null; } };
+globalThis.CustomEvent = class CustomEvent extends Event {
+  constructor(type, init = {}) {
+    super(type);
+    this.detail = init.detail;
+  }
+};
+const { S2sRealtimeClient } = await import("./demo/s2s-realtime-client.js");
+const client = new S2sRealtimeClient({
+  transport: "websocket",
+  voice: "Serena",
+  instructions: "Be helpful.",
+  directUrl: "ws://unused",
+  deferOutputAudio: true,
+});
+client._playbackNode = { port: { postMessage() {} } };
+client._ctx = { state: "running" };
+
+const chunks = [];
+let streamEnded = null;
+client.addEventListener("output-audio-chunk", (event) => {
+  chunks.push(event.detail);
+});
+client.addEventListener("output-audio-stream-end", (event) => {
+  streamEnded = event.detail;
+});
+client._onAudio({ data: new Uint8Array(30000).buffer, responseId: "resp_avatar" });
+if (chunks.length !== 0) throw new Error("short prefix was emitted too early");
+client._onAudio({ data: new Uint8Array(20000).buffer, responseId: "resp_avatar" });
+if (chunks.length !== 1) throw new Error("first second did not stream before response.done");
+client._onTransportEvent({
+  type: "response.done",
+  response: { id: "resp_avatar", status: "completed", output: [] },
+});
+
+if (chunks.length !== 2) throw new Error(`expected 2 chunks, received ${chunks.length}`);
+if (chunks[0].responseId !== "resp_avatar" || chunks[1].responseId !== "resp_avatar") {
+  throw new Error("wrong response id");
+}
+if (chunks[0].pcm.byteLength !== 48000 || chunks[0].final) {
+  throw new Error("first chunk should contain exactly one second");
+}
+if (chunks[1].pcm.byteLength !== 2000 || !chunks[1].final) {
+  throw new Error("response tail was not flushed as the final chunk");
+}
+if (streamEnded?.responseId !== "resp_avatar") throw new Error("stream end was not emitted");
+const wav = new DataView(await chunks[0].audio.arrayBuffer());
+const ascii = (offset, length) =>
+  String.fromCharCode(...new Uint8Array(wav.buffer, offset, length));
+if (ascii(0, 4) !== "RIFF" || ascii(8, 4) !== "WAVE") {
+  throw new Error("avatar audio is not WAV");
+}
+if (wav.getUint32(24, true) !== 24000 || wav.getUint32(40, true) !== 48000) {
+  throw new Error("avatar WAV metadata is wrong");
+}
+"""
+    )
 
 
 def test_mic_capture_reports_and_resamples_to_24khz_without_changing_pitch():
@@ -309,7 +371,7 @@ const processor = new CaptureProcessor({
   processorOptions: {
     chunkMs: 40,
     targetRate: 24000,
-    version: "audio-24k-v1",
+    version: "audio-24k-v5",
   },
 });
 processor.port.onmessage({ data: { kind: "probe" } });
@@ -319,7 +381,7 @@ if (!config) throw new Error("capture worklet did not report its configuration")
 if (config.inputRate !== 48000 || config.outputRate !== 24000) {
   throw new Error(`unexpected sample-rate handshake: ${JSON.stringify(config)}`);
 }
-if (config.version !== "audio-24k-v1") {
+if (config.version !== "audio-24k-v5") {
   throw new Error(`unexpected worklet version: ${config.version}`);
 }
 

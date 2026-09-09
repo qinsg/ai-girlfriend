@@ -77,6 +77,10 @@ LB_HF_TOKEN = os.environ.get("LB_HF_TOKEN", "").strip()
 SPEECH_TO_SPEECH_URL = os.environ.get("SPEECH_TO_SPEECH_URL", "").strip()
 if SPEECH_TO_SPEECH_URL:
     LOAD_BALANCER_URL = ""
+# Optional host-side MLX portrait service. The browser only calls the
+# same-origin proxy, so Docker's host name stays server-side.
+AVATAR_URL = os.environ.get("AVATAR_URL", "").strip()
+AVATAR_MAX_AUDIO_BYTES = int(os.environ.get("AVATAR_MAX_AUDIO_BYTES", str(4 * 1024 * 1024)))
 # HF injects SPACE_ID ("owner/space") into every Space runtime; it's absent
 # locally and on a plain `docker run`. We meter conversation time ONLY on the
 # deployed Space — i.e. when BOTH the LB is configured AND we're on a Space.
@@ -219,7 +223,91 @@ def config():
         "iceServers": RTC_ICE_SERVERS,
         "startupGreeting": STARTUP_GREETING,
         "auth": AUTH_ENABLED,
+        "avatar": bool(AVATAR_URL),
     }
+
+
+@app.get("/api/avatar/health")
+async def avatar_health():
+    if not AVATAR_URL:
+        raise HTTPException(status_code=404, detail="Avatar service is disabled")
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            response = await http.get(f"{AVATAR_URL.rstrip('/')}/health")
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="Avatar service is unavailable") from exc
+    if response.status_code != 200:
+        raise HTTPException(status_code=503, detail="Avatar service is not ready")
+    return response.json()
+
+
+@app.get("/api/avatar/idle/{character}")
+async def avatar_idle(character: str, request: Request):
+    """Proxy the continuously-looping idle video, including byte ranges."""
+    if not AVATAR_URL:
+        raise HTTPException(status_code=404, detail="Avatar service is disabled")
+    upstream_headers = {}
+    if byte_range := request.headers.get("range"):
+        upstream_headers["Range"] = byte_range
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as http:
+            response = await http.get(
+                f"{AVATAR_URL.rstrip('/')}/idle/{character}",
+                headers=upstream_headers,
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="Avatar idle stream is unavailable") from exc
+    if response.status_code not in {200, 206}:
+        detail = response.text[:500] or "Avatar idle stream failed"
+        raise HTTPException(status_code=502, detail=detail)
+    forwarded = {
+        name.title(): value
+        for name in ("content-range", "accept-ranges", "content-length", "cache-control")
+        if (value := response.headers.get(name))
+    }
+    forwarded.setdefault("Cache-Control", "public, max-age=86400")
+    return Response(
+        content=response.content,
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "video/mp4"),
+        headers=forwarded,
+    )
+
+
+@app.post("/api/avatar/lipsync")
+async def avatar_lipsync(request: Request, character: str = "xiaoman", start_frame: int = 0):
+    """Render one short speech chunk without stopping the idle stream."""
+    if not AVATAR_URL:
+        raise HTTPException(status_code=404, detail="Avatar service is disabled")
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="WAV body is empty")
+    if len(audio) > AVATAR_MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="WAV body is too large")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0)) as http:
+            response = await http.post(
+                f"{AVATAR_URL.rstrip('/')}/lipsync",
+                params={"character": character, "start_frame": max(0, start_frame)},
+                content=audio,
+                headers={"Content-Type": "audio/wav"},
+            )
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=503, detail="Avatar lip-sync request failed") from exc
+    if response.status_code != 200:
+        detail = response.text[:500] or "Avatar lip-sync failed"
+        raise HTTPException(status_code=502, detail=detail)
+    forwarded = {
+        name.title(): value
+        for name in (
+            "x-avatar-render-seconds",
+            "x-avatar-start-frame",
+            "x-avatar-next-frame",
+            "x-avatar-frame-count",
+        )
+        if (value := response.headers.get(name))
+    }
+    return Response(content=response.content, media_type="video/mp4", headers=forwarded)
 
 
 @app.get("/api/me")

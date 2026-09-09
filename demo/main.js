@@ -17,10 +17,11 @@
  * @typedef {S2sRealtimeClient} RealtimeClient
  */
 
-import { S2sRealtimeClient } from "./s2s-realtime-client.js?v=audio-24k-v3";
+import { S2sRealtimeClient } from "./s2s-realtime-client.js?v=audio-24k-v5";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
+import { AvatarView } from "./ui/avatar.js?v=audio-24k-v5";
 
 const DEFAULT_VOICE = "Serena";
 const DEFAULT_INSTRUCTIONS = "你正在进行简短自然的中文语音对话。";
@@ -36,7 +37,10 @@ const STORAGE_KEYS = {
   searchKey: "s2s.ws.searchKey",
   // v2 resets the old enabled-by-default gate. Voice capture must work before
   // users opt into room-noise filtering.
-  noiseGate: "s2s.ws.noiseGate.v2",
+  // v3 clears an overly aggressive value saved by the earlier radial control.
+  // A stored -3 dB threshold makes an apparently live microphone transmit
+  // near-silence, so upgrades start once from the safe Off position.
+  noiseGate: "s2s.ws.noiseGate.v3",
   // "ws" | "webrtc". Not under the historical "s2s.ws." prefix — it selects
   // between the transports rather than configuring the WS one.
   transport: "s2s.transport",
@@ -301,6 +305,21 @@ const settingsForm = /** @type {HTMLFormElement} */ (settingsModal.querySelector
 let currentState = "idle";
 let settings = loadSettings();
 let characterPresets = {};
+const avatar = new AvatarView({
+  onState(state) {
+    if (!client) return;
+    if (state === "preparing") {
+      setState("processing");
+      setCaption("正在准备第一段口型", "muted");
+    } else if (state === "playing") {
+      setState("ai-speaking");
+      setCaption("");
+    } else if (currentState === "processing" || currentState === "ai-speaking") {
+      setState("listening");
+    }
+  },
+});
+avatar.setAudioOutput(settings.audioOutputId);
 
 async function loadCharacterPresets() {
   try {
@@ -327,6 +346,7 @@ async function loadCharacterPresets() {
       settings.instructions = characterPresets[settings.character].instructions || DEFAULT_INSTRUCTIONS;
       saveSettings(settings);
     }
+    avatar.setCharacter(settings.character, characterPresets[settings.character]);
   } catch (error) {
     console.warn("[main] character presets unavailable:", error);
   }
@@ -365,6 +385,9 @@ let iceServers = [];
 // Optional hidden user prompt supplied by the deployment. When non-empty, the
 // client asks the model to greet once after the initial session configuration.
 let startupGreeting = "";
+// The server only advertises this when it can proxy to the host-side MLX
+// portrait service. WebSocket transport exposes the raw TTS PCM we need.
+let avatarConfigured = false;
 // Transport of the LIVE (or starting) conversation — as opposed to
 // `settings.transport`, which is what the NEXT one will use. Drives the
 // camera-snapshot size budget while a call is running.
@@ -949,6 +972,8 @@ async function fetchConfig() {
       startupGreeting = typeof json.startupGreeting === "string"
         ? json.startupGreeting.trim()
         : "";
+      avatarConfigured = !!json.avatar;
+      avatar.setEnabled(avatarConfigured);
       // The conversation-time limiter rides on the LB being present.
       limiterOn = lbMode;
     }
@@ -1134,6 +1159,8 @@ settingsForm.addEventListener("submit", (event) => {
 
   settings = readSettingsFromForm();
   saveSettings(settings);
+  avatar.setCharacter(settings.character, characterPresets[settings.character]);
+  avatar.setAudioOutput(settings.audioOutputId);
 
   // Voice + instructions can apply to a live session without reconnecting; a
   // changed connection URL only takes effect on the next restart. Speaker
@@ -1423,9 +1450,15 @@ async function preferPhysicalMic() {
     const selected = devices.find((device) =>
       device.kind === "audioinput" && device.deviceId === settings.audioInputId
     );
-    // Preserve an explicit physical-device choice. Replace missing and virtual
-    // selections, which commonly produce a live track containing only silence.
-    if (selected && !/Teams|WeMeet|Virtual/i.test(selected.label)) return;
+    // Preserve an explicit physical-device choice. The browser's synthetic
+    // `default` entry is not explicit: on this Mac it currently resolves to a
+    // Bluetooth headset that may expose a silent mic. Replace default, missing,
+    // and virtual selections with the known-good built-in microphone.
+    if (
+      selected
+      && selected.deviceId !== "default"
+      && !/Teams|WeMeet|Virtual/i.test(selected.label)
+    ) return;
     const builtIn = devices.find((device) =>
       device.kind === "audioinput"
       && /MacBook Pro Microphone|Built-in/i.test(device.label)
@@ -1536,6 +1569,7 @@ async function doStart(audioContext = null) {
     acquireMic: acquireMicStream,
     tools: activeToolDefs(),
     audioOutputId: settings.audioOutputId || "",
+    deferOutputAudio: avatarConfigured && transport === "ws",
     executeTool: async ({ name, arguments: args, callId }) => {
       chat.onToolCall(name);
       const result = await runTool(name, args, callId);
@@ -1591,6 +1625,7 @@ async function doStart(audioContext = null) {
   c.addEventListener("user-turn-started", (e) => {
     const detail = /** @type {CustomEvent<{ itemId?: string }>} */ (e).detail;
     chat.onUserTurnStarted(detail);
+    avatar.cancel();
   });
   c.addEventListener("user-turn-stopped", (e) => {
     const detail = /** @type {CustomEvent<{ itemId?: string }>} */ (e).detail;
@@ -1605,6 +1640,17 @@ async function doStart(audioContext = null) {
     const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
     chat.onResponseFinished(detail);
   });
+  c.addEventListener("output-audio-chunk", (e) => {
+    const detail = /** @type {CustomEvent<{audio: Blob; pcm: ArrayBuffer; responseId: string; chunkIndex: number; final: boolean}>} */ (e).detail;
+    avatar.renderChunk(detail, (pcm) => {
+      if (client === c) c.playPcm16(pcm);
+    });
+  });
+  c.addEventListener("output-audio-stream-end", (e) => {
+    const detail = /** @type {CustomEvent<{responseId: string}>} */ (e).detail;
+    avatar.finishResponse(detail.responseId);
+  });
+  c.addEventListener("audio-interrupted", () => avatar.cancel());
   c.addEventListener("audio-state", (e) => {
     const detail = /** @type {CustomEvent<{ state: string; receivedBytes?: number }>} */ (e).detail;
     if (detail.receivedBytes && detail.state !== "running") {
@@ -1769,6 +1815,7 @@ async function teardown() {
   endTrackedSession();
   endQueueTicket();
   chat.reset({ dismiss: true });
+  avatar.cancel();
   if (client) {
     try {
       await client.close();

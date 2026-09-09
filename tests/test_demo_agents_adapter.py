@@ -125,6 +125,7 @@ async function setupAudio(captureConfig) {
     audioWorklet: { async addModule(url) { modules.push(url); } },
     createMediaStreamSource() { return { connect() {} }; },
     createAnalyser: analyser,
+    createGain() { return { gain: { value: 1 }, connect(destination) { return destination; } }; },
   };
   globalThis.AudioWorkletNode = class AudioWorkletNode {
     constructor(_context, name, options) {
@@ -142,7 +143,7 @@ async function setupAudio(captureConfig) {
       };
       nodes.push(this);
     }
-    connect() {}
+    connect(destination) { return destination; }
   };
 
   const client = new S2sRealtimeClient({
@@ -159,9 +160,9 @@ const good = await setupAudio({
   kind: "capture-config",
   inputRate: 48000,
   outputRate: 24000,
-  version: "audio-24k-v1",
+  version: "audio-24k-v5",
 });
-if (good.modules.length !== 2 || good.modules.some((url) => !url.endsWith("?v=audio-24k-v1"))) {
+if (good.modules.length !== 2 || good.modules.some((url) => !url.endsWith("?v=audio-24k-v5"))) {
   throw new Error(`audio worklets were not versioned: ${JSON.stringify(good.modules)}`);
 }
 const capture = good.nodes.find((node) => node.name === "mic-capture");

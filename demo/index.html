@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>本地赛博 AI 女友 · speech-to-speech</title>
-    <link rel="stylesheet" href="style.css" />
+    <link rel="stylesheet" href="style.css?v=audio-24k-v5" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -65,6 +65,30 @@
       </header>
 
       <main class="stage">
+        <section id="avatar-card" class="avatar-card" aria-label="数字人画面">
+          <img
+            id="avatar-image"
+            class="avatar-media avatar-image"
+            src="assets/avatars/xiaoman.png"
+            alt="小满"
+          />
+          <video
+            id="avatar-idle-video"
+            class="avatar-media avatar-idle-video"
+            playsinline
+            muted
+            loop
+            autoplay
+          ></video>
+          <video id="avatar-speech-video" class="avatar-media avatar-speech-video" playsinline></video>
+          <div class="avatar-vignette" aria-hidden="true"></div>
+          <div class="avatar-meta">
+            <span id="avatar-name" class="avatar-name">小满</span>
+            <span id="avatar-status" class="avatar-status">本地数字人</span>
+          </div>
+        </section>
+
+        <section class="voice-panel" aria-label="语音控制">
         <div class="orb-wrap">
           <div id="mic-gate" class="mic-gate">
             <svg id="mic-gate-arc" class="mic-gate-arc" viewBox="0 0 100 100" aria-hidden="true">
@@ -135,6 +159,7 @@
             Leave queue
           </button>
         </div>
+        </section>
       </main>
 
       <footer class="footer">
@@ -407,6 +432,6 @@
     </dialog>
 
     <script src="vendor/openai-realtime-agents.umd.js"></script>
-    <script type="module" src="main.js?v=audio-24k-v3"></script>
+    <script type="module" src="main.js?v=audio-24k-v5"></script>
   </body>
 </html>

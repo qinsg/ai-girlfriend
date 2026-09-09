@@ -2,7 +2,7 @@
 
 这是基于 Hugging Face [`speech-to-speech`](https://github.com/huggingface/speech-to-speech) 1.0.0 的本地实时语音项目，也是对[零度博客原教程](https://www.freedidi.com/24928.html)的 Apple Silicon 升级版。
 
-它不是文字聊天套壳。浏览器持续采集麦克风，后端完成语音检测、中文识别、大模型回复和语音合成，再把声音流式送回浏览器。用户可以在 AI 说话时直接插话。
+它不是文字聊天套壳。浏览器持续采集麦克风，后端完成语音检测、中文识别、大模型回复和语音合成；本机数字人服务维持持续活动的角色画面，并把回复语音分块转成口型。用户直接说话，角色以带声音的动态人像回应。
 
 ## 界面预览
 
@@ -19,7 +19,7 @@
   </tr>
 </table>
 
-首页中央的光球会随会话状态变化。点击光球开始通话，浏览器取得麦克风权限后即可直接说话。
+左侧是当前角色的数字人画面，右侧光球会随会话状态变化。点击光球开始通话，浏览器取得麦克风权限后即可直接说话。
 
 ```text
 浏览器麦克风
@@ -32,8 +32,18 @@ Qwen3 8B GGUF + llama.cpp Metal
     ↓
 Qwen3-TTS MLX
     ↓
-浏览器扬声器
+约 1 秒一段的回复音频
+    ↓
+MuseTalk 1.5 MLX 下半脸口型
+    ↓
+连续播放的口型片段
+
+角色照片 ── LivePortrait MLX ── 持续循环的眨眼、视线与轻微呼吸
 ```
+
+页面不会在每轮回复后退回静态照片。无语音时，静音待机视频持续播放眨眼和视线动作；收到 TTS 音频后，浏览器每累计约 1 秒就立即提交一个口型片段，上一段播放时后台继续生成下一段。MuseTalk 只替换下半脸，避免为了放大嘴型而带动整张脸抖动。某一段生成失败时，浏览器会播放该段原始语音，不会丢失回复。
+
+在本仓库的 M3 Max 验证机上，预热后 1 秒音频生成 25 帧口型约需 1.02 秒。为兼顾速度和流畅度，MuseTalk 每秒计算 8 个神经口型关键帧，再插值到 25fps；启动脚本会预先编译这一常用形状。
 
 ## 当前支持范围
 
@@ -41,7 +51,7 @@ Qwen3-TTS MLX
 
 - macOS，处理器架构为 `arm64`
 - 已在 M3 Max、128GB 统一内存上完成端到端验证
-- 默认模型是 Qwen3-8B Q4，建议至少预留 20GB 磁盘空间
+- 默认模型是 Qwen3-8B Q4，语音与数字人还会下载各自模型，建议至少预留 30GB 磁盘空间
 - 建议使用 Chrome 或 Edge，Safari 也可以运行，但音频设备切换能力较少
 
 本仓库的自动脚本没有适配 Intel Mac、Windows、Linux 或 NVIDIA CUDA。当前部署范围仅限 Apple Silicon Mac。
@@ -69,7 +79,7 @@ uname -m
 xcode-select --install
 ```
 
-### 3. 安装 uv、llama.cpp 和可选的 ffmpeg
+### 3. 安装 uv、llama.cpp 和 ffmpeg
 
 ```bash
 brew update
@@ -77,7 +87,7 @@ brew install uv llama.cpp
 brew install ffmpeg
 ```
 
-`ffmpeg` 只在制作声音克隆参考音频时使用。项目用 `uv` 创建 Python 3.12 环境，缺少 Python 3.12 时，uv 会自动下载。安装方法可参考 [uv 官方文档](https://docs.astral.sh/uv/getting-started/installation/)和 [llama.cpp 官方仓库](https://github.com/ggml-org/llama.cpp)。
+`ffmpeg` 用于数字人视频的音视频合成，也可用于制作声音克隆参考音频。项目用 `uv` 创建 Python 3.12 环境，缺少 Python 3.12 时，uv 会自动下载。安装方法可参考 [uv 官方文档](https://docs.astral.sh/uv/getting-started/installation/)和 [llama.cpp 官方仓库](https://github.com/ggml-org/llama.cpp)。
 
 检查命令是否可用：
 
@@ -133,6 +143,8 @@ chmod +x scripts/*.sh
 6. 下载 NLTK 的必要数据。
 7. 创建 `.cache/`、`logs/` 和 `voices/` 运行目录。
 
+数字人使用独立的 Python 环境和模型。无需提前手动安装；第一次执行 `./scripts/up.sh` 时会自动运行 `./scripts/bootstrap-avatar-macos.sh`。
+
 `.env` 包含本机密钥，已经被 `.gitignore` 排除。不要把它提交到 GitHub。
 
 初始化完成后可查看配置：
@@ -153,6 +165,8 @@ sed -n '1,200p' .env
 - `mlx-community/whisper-large-v3-turbo`，用于中文语音识别
 - Qwen3-TTS 1.7B MLX 6bit，用于语音合成
 - Silero VAD 和 Smart Turn，用于语音起止与轮次判断
+- FasterLivePortrait-MLX 权重，用于生成持续眨眼和视线动作的待机画面
+- MuseTalk 1.5 MLX 权重，用于按语音分块生成下半脸口型
 
 模型下载和首次预热需要一些时间。终端最后出现下面的地址才算启动完成：
 
@@ -180,8 +194,10 @@ sed -n '1,200p' .env
 [ok] llama-server
 [ok] curl
 [ok] 官方 speech-to-speech
+[ok] FasterLivePortrait-MLX
 [ok] llama.cpp
 [ok] Realtime voice
+[ok] Continuous avatar
 ```
 
 也可以逐项检查：
@@ -190,9 +206,10 @@ sed -n '1,200p' .env
 docker compose ps
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8765/v1/usage
+curl http://127.0.0.1:9871/health
 ```
 
-`docker compose ps` 中的 `demo` 应为 `Up`，两个 `curl` 命令都应返回 JSON。
+`docker compose ps` 中的 `demo` 应为 `Up`，三个 `curl` 命令都应返回 JSON。
 
 一次完整对话应经历这些状态：
 
@@ -244,6 +261,9 @@ docker compose ps
 | `TTS_SPEAKER` | `Serena` | 默认内置音色 |
 | `CHARACTER_FILE` | `./config/characters.custom.json` | 浏览器角色配置 |
 | `STARTUP_GREETING` | 中文提示词 | 连接成功后的主动问候 |
+| `AVATAR_ENABLED` | `true` | 是否启用本地音频驱动数字人 |
+| `AVATAR_PORT` | `9871` | 宿主机数字人服务端口 |
+| `AVATAR_MLX_PROFILE` | `quality` | 生成待机循环时使用的 LivePortrait MLX 配置 |
 
 ### 切换到 14B LLM
 
@@ -264,12 +284,13 @@ LLM_HF_MODEL=Qwen/Qwen3-14B-GGUF:Q4_K_M
 
 ### 修改角色
 
-默认角色在 [`config/characters.custom.json`](./config/characters.custom.json)。每个角色需要三个字段：
+默认角色在 [`config/characters.custom.json`](./config/characters.custom.json)。每个角色需要角色照片、音色和提示词：
 
 ```json
 {
   "角色标识": {
     "label": "设置面板中显示的名称",
+    "avatar": "assets/avatars/角色照片.png",
     "voice": "Serena",
     "instructions": "角色设定和回复约束"
   }
@@ -282,7 +303,15 @@ LLM_HF_MODEL=Qwen/Qwen3-14B-GGUF:Q4_K_M
 docker compose up -d --build demo
 ```
 
-网页设置中切换角色时，`instructions` 和 `voice` 会同时更新，无需重新加载 TTS 模型。
+网页设置中切换角色时，照片、`instructions` 和 `voice` 会一起更新。角色照片应使用正面、闭嘴、无遮挡、光线均匀的成年人物半身照；嘴部、下巴和脸部轮廓必须清楚。仓库已为小满和小雪提供与性格设定对应的照片。
+
+如果只需要语音，不需要数字人，可在 `.env` 中设置：
+
+```dotenv
+AVATAR_ENABLED=false
+```
+
+然后执行 `./scripts/down.sh && ./scripts/up.sh`。页面会保留静态角色照片，AI 回复恢复为直接播放语音。
 
 ## 八、声音克隆
 
@@ -321,6 +350,7 @@ TTS_REFERENCE_TEXT=参考音频中逐字对应的文本
 docker compose logs -f demo
 tail -f logs/llama.log
 tail -f logs/speech.log
+tail -f logs/avatar.log
 ```
 
 按 `Ctrl+C` 只会退出日志查看，不会停止后台服务。
@@ -364,9 +394,28 @@ tail -f logs/speech.log
 
 新版前端会检查 Web Audio 是否被浏览器挂起。浏览器仍阻止播放时，页面会提示再次点击中央圆球启用声音。
 
+### 只有静态照片，没有持续待机画面或口型
+
+先检查数字人服务：
+
+```bash
+curl http://127.0.0.1:9871/health
+tail -n 200 logs/avatar.log
+```
+
+健康接口应包含 `"status":"ready"`。若提示缺少运行时或权重，重新执行：
+
+```bash
+./scripts/bootstrap-avatar-macos.sh
+./scripts/down.sh
+./scripts/up.sh
+```
+
+健康信息应包含 `"idleVideo":true` 和 `"streamingChunks":true`。首次启动需要生成待机循环并缓存角色全部帧，完成后页面应始终显示活动画面。开始回复时短暂显示“正在准备第一段口型”是正常现象；某个口型片段生成失败时，浏览器只对该段退回纯语音。
+
 ### 能听见开场白，但说话没有反应
 
-1. 强制刷新页面，确保加载的是 `audio-24k-v3` 前端。
+1. 强制刷新页面，确保加载的是 `audio-24k-v5` 前端。
 2. 在 Settings 的 Microphone 中选择 `MacBook Pro Microphone (Built-in)`。
 3. 把 Noise gate 拉到最左侧 `Off`。
 4. 确认麦克风按钮没有显示静音状态。
@@ -396,14 +445,15 @@ brew reinstall llama.cpp
 ./scripts/down.sh
 ```
 
-脚本只会停止 PID 文件中且命令行与 `llama-server` 或 `speech-to-speech` 匹配的进程，不会按名称误杀其他程序。
+脚本只会停止 PID 文件中且命令行与 `llama-server`、`speech-to-speech` 或本项目数字人服务匹配的进程，不会按名称误杀其他程序。
 
 ## 项目目录
 
 ```text
 .
 ├── config/                     # 角色和音色配置
-├── demo/                       # Realtime 浏览器客户端与首页背景图
+├── avatar/                     # 本地音频驱动数字人适配服务
+├── demo/                       # Realtime 浏览器客户端、角色照片与首页背景图
 ├── docs/screenshots/           # README 使用的界面截图
 ├── scripts/                    # 初始化、启动、停止和诊断脚本
 ├── src/speech_to_speech/       # 官方语音管线
@@ -414,8 +464,8 @@ brew reinstall llama.cpp
 └── uv.lock                     # Python 依赖锁文件
 ```
 
-Hugging Face 上游原始说明保存在 [`UPSTREAM.md`](./UPSTREAM.md)。
+Hugging Face 上游原始说明保存在 [`UPSTREAM.md`](./UPSTREAM.md)。数字人运行时版本、权重位置和上游项目见 [`avatar/README.md`](./avatar/README.md)。
 
 ## 许可证
 
-项目主体来自 Hugging Face `speech-to-speech`，使用 Apache-2.0 许可证。发布修改版本时请保留 [`LICENSE`](./LICENSE) 和上游版权信息。
+项目主体来自 Hugging Face `speech-to-speech`，使用 Apache-2.0 许可证。数字人使用 FasterLivePortrait-MLX、LivePortrait 和 MuseTalk 1.5 的本地运行组件，使用前请同时查看其上游许可证和模型说明。发布修改版本时请保留 [`LICENSE`](./LICENSE) 和上游版权信息。

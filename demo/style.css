@@ -600,15 +600,134 @@ a:hover {
 /* ─── Stage ───────────────────────────────────────────────────────────── */
 
 .stage {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(360px, 1fr);
+  align-items: center;
+  justify-content: center;
+  width: min(1240px, 100%);
+  margin: 0 auto;
+  padding: 20px 32px 28px;
+  gap: clamp(24px, 4vw, 64px);
+  /* Let the stage shrink inside the grid's 1fr row so a height-capped orb can
+   * give back space rather than forcing the whole app to overflow. */
+  min-height: 0;
+}
+
+.voice-panel {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px 24px 32px;
-  gap: 20px;
-  /* Let the stage shrink inside the grid's 1fr row so a height-capped orb can
-   * give back space rather than forcing the whole app to overflow. */
-  min-height: 0;
+  gap: 18px;
+  min-width: 0;
+}
+
+.avatar-card {
+  position: relative;
+  justify-self: stretch;
+  width: 100%;
+  height: min(68vh, 690px);
+  min-height: 360px;
+  overflow: hidden;
+  border-radius: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(10, 12, 19, 0.82);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46), inset 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.avatar-media {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 35%;
+}
+
+.avatar-image {
+  z-index: 1;
+  transform: scale(1.015);
+  animation: avatar-idle 7s ease-in-out infinite alternate;
+}
+
+.avatar-idle-video {
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  background: #090b11;
+  animation: avatar-idle 8s ease-in-out infinite alternate;
+}
+
+.avatar-idle-video.ready {
+  opacity: 1;
+}
+
+.avatar-speech-video {
+  z-index: 3;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+  background: transparent;
+}
+
+.avatar-speech-video.playing {
+  opacity: 1;
+}
+
+.avatar-card.preparing-speech::after {
+  content: "";
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  border: 1px solid rgba(75, 205, 238, 0.48);
+  border-radius: inherit;
+  box-shadow: inset 0 0 42px rgba(55, 182, 219, 0.12);
+  pointer-events: none;
+  animation: avatar-rendering 1.4s ease-in-out infinite alternate;
+}
+
+.avatar-vignette {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent 56%, rgba(4, 5, 9, 0.72) 100%);
+}
+
+.avatar-meta {
+  position: absolute;
+  z-index: 6;
+  left: 20px;
+  right: 20px;
+  bottom: 17px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.avatar-name {
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.avatar-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+@keyframes avatar-idle {
+  from { transform: scale(1.015) translate3d(0, 0, 0); }
+  to { transform: scale(1.035) translate3d(0, -0.35%, 0); }
+}
+
+@keyframes avatar-rendering {
+  from { opacity: 0.35; }
+  to { opacity: 1; }
 }
 
 /* ─── Central circle ──────────────────────────────────────────────────── */
@@ -620,6 +739,10 @@ a:hover {
   align-items: center;
   justify-content: center;
   gap: clamp(18px, 3vw, 32px);
+}
+
+.voice-panel .circle {
+  width: clamp(150px, min(26vw, 40vh), 270px);
 }
 
 .circle {
@@ -2755,4 +2878,61 @@ body.cam-on .footer {
   .stage { padding: 8px 14px 10px; gap: 8px; }
   .footer { display: none; }
   .circle { width: clamp(120px, min(50vw, 46vh), 240px); }
+}
+
+@media (max-width: 760px) {
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(250px, 1fr) auto;
+    width: 100%;
+    padding: 10px 14px 18px;
+    gap: 14px;
+  }
+
+  .avatar-card {
+    width: min(92vw, 520px);
+    height: min(52vh, 480px);
+    min-height: 250px;
+    justify-self: center;
+    border-radius: 24px;
+  }
+
+  .voice-panel {
+    gap: 8px;
+  }
+
+  .orb-wrap,
+  .orb-wrap.live {
+    flex-direction: row;
+    gap: 12px;
+  }
+
+  .voice-panel .circle {
+    width: clamp(108px, min(34vw, 20vh), 150px);
+  }
+
+  .avatar-meta {
+    left: 16px;
+    right: 16px;
+    bottom: 13px;
+  }
+}
+
+@media (max-height: 620px) and (min-width: 761px) {
+  .avatar-card {
+    height: min(62vh, 460px);
+    min-height: 280px;
+  }
+
+  .voice-panel .circle {
+    width: clamp(130px, min(24vw, 34vh), 220px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .avatar-image,
+  .avatar-idle-video,
+  .avatar-card.preparing-speech::after {
+    animation: none;
+  }
 }
