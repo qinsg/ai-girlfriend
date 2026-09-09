@@ -112,7 +112,7 @@ docker compose version
 
 ## 二、取得项目代码
 
-克隆项目并进入目录：
+首次安装时克隆项目并进入目录：
 
 ```bash
 git clone https://github.com/qinsg/ai-girlfriend.git
@@ -124,6 +124,16 @@ cd ai-girlfriend
 ```bash
 chmod +x scripts/*.sh
 ```
+
+如果本机已经克隆过本仓库，先停止旧服务再更新：
+
+```bash
+./scripts/down.sh
+git pull --ff-only origin main
+./scripts/up.sh
+```
+
+`./scripts/up.sh` 会补装新版本增加的数字人运行时和模型。它不会删除原来的 `.env`、模型缓存或声音素材。
 
 ## 三、初始化本地环境
 
@@ -176,7 +186,16 @@ sed -n '1,200p' .env
 
 打开 [http://localhost:7860](http://localhost:7860)，点击中央圆球，允许浏览器访问麦克风，然后直接说中文。
 
-不要关闭 Docker Desktop。`llama-server` 与 `speech-to-speech` 会以本机后台进程运行，日志写入 `logs/`。
+启动完成后，本机运行以下服务：
+
+| 服务 | 运行位置 | 默认地址 |
+|---|---|---|
+| 浏览器界面 | Docker Compose | `http://127.0.0.1:7860` |
+| llama.cpp | macOS 宿主机 | `http://127.0.0.1:8080` |
+| speech-to-speech Realtime | macOS 宿主机 | `ws://127.0.0.1:8765/v1/realtime` |
+| 持续数字人 | macOS 宿主机 | `http://127.0.0.1:9871` |
+
+不要关闭 Docker Desktop。三个宿主机服务以后台进程运行，日志写入 `logs/`。默认地址都只监听本机，不会直接暴露到局域网。
 
 ## 五、验证部署
 
@@ -195,6 +214,7 @@ sed -n '1,200p' .env
 [ok] curl
 [ok] 官方 speech-to-speech
 [ok] FasterLivePortrait-MLX
+[ok] MuseTalk 1.5 MLX
 [ok] llama.cpp
 [ok] Realtime voice
 [ok] Continuous avatar
@@ -284,7 +304,9 @@ LLM_HF_MODEL=Qwen/Qwen3-14B-GGUF:Q4_K_M
 
 ### 修改角色
 
-默认角色在 [`config/characters.custom.json`](./config/characters.custom.json)。每个角色需要角色照片、音色和提示词：
+默认角色在 [`config/characters.custom.json`](./config/characters.custom.json)。仓库内置 `xiaoman` 和 `xiaoxue` 两个数字人角色。切换角色时，网页会同时更新照片、音色和提示词。
+
+每个网页角色包含以下字段：
 
 ```json
 {
@@ -297,13 +319,20 @@ LLM_HF_MODEL=Qwen/Qwen3-14B-GGUF:Q4_K_M
 }
 ```
 
-修改 JSON 后重新构建 Demo：
+只修改现有角色的音色或提示词时，保存 JSON 后重新构建 Demo：
 
 ```bash
 docker compose up -d --build demo
 ```
 
-网页设置中切换角色时，照片、`instructions` 和 `voice` 会一起更新。角色照片应使用正面、闭嘴、无遮挡、光线均匀的成年人物半身照；嘴部、下巴和脸部轮廓必须清楚。仓库已为小满和小雪提供与性格设定对应的照片。
+新增角色不能只改 JSON。数字人服务还需要知道宿主机上的原始照片路径：
+
+1. 把正面、闭嘴、无遮挡、光线均匀的成年人物半身照放入 `demo/assets/avatars/`。
+2. 在 `config/characters.custom.json` 中增加角色配置。
+3. 在 `avatar/service.py` 的 `PORTRAITS` 中登记同一个角色标识和照片路径。
+4. 执行 `./scripts/down.sh` 和 `./scripts/up.sh`，让服务生成该角色的待机缓存。
+
+嘴部、下巴和脸部轮廓必须清楚。图片不合适时，LivePortrait 可能检测不到脸，MuseTalk 也容易在嘴部边缘留下接缝。
 
 如果只需要语音，不需要数字人，可在 `.env` 中设置：
 
@@ -446,6 +475,21 @@ brew reinstall llama.cpp
 ```
 
 脚本只会停止 PID 文件中且命令行与 `llama-server`、`speech-to-speech` 或本项目数字人服务匹配的进程，不会按名称误杀其他程序。
+
+如果服务仍占用端口，但 `logs/*.pid` 已丢失，先找出监听进程：
+
+```bash
+lsof -nP -iTCP:8080 -iTCP:8765 -iTCP:9871 -sTCP:LISTEN
+```
+
+逐个核对命令行，确认属于本项目后再停止：
+
+```bash
+ps -p <PID> -o pid=,command=
+kill <PID>
+```
+
+不要使用 `killall python` 或 `pkill -f uvicorn`，这些命令可能停止其他项目。
 
 ## 项目目录
 
