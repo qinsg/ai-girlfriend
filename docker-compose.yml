@@ -1,0 +1,17 @@
+name: local-cyber-girlfriend
+
+services:
+  demo:
+    build:
+      context: ./demo
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-7860}:7860"
+    environment:
+      SPEECH_TO_SPEECH_URL: ws://localhost:${REALTIME_PORT:-8765}/v1/realtime
+      STARTUP_GREETING: ${STARTUP_GREETING:-请以角色身份自然地用一句中文向用户打招呼。}
+      ENABLE_WEBRTC: "false"
+    volumes:
+      - ${CHARACTER_FILE:-./config/characters.custom.json}:/app/characters.json:ro
+    security_opt:
+      - no-new-privileges:true

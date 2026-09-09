@@ -1,0 +1,112 @@
+# Local secrets and per-machine configuration
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.token
+
+# Runtime logs, PID files and local sessions
+/logs/
+*.log
+*.log.*
+*.pid
+*.pid.lock
+*.ses
+:memory:.ses
+nohup.out
+
+# Downloaded model weights and generated model artifacts
+/models/
+/downloads/
+*.gguf
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.tflite
+
+# Private voice-cloning material
+/voices/**
+!/voices/.gitkeep
+!/voices/README.md
+
+# Python virtual environments and caches
+/.venv/
+/venv/
+/env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+/.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pytype/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Python build and package output
+/build/
+/dist/
+*.egg-info/
+.eggs/
+wheels/
+pip-log.txt
+
+# JavaScript dependencies and build output
+node_modules/
+demo/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+demo/dist/
+demo/.vite/
+
+# Jupyter and notebook state
+.ipynb_checkpoints/
+
+# macOS and other operating-system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# Editors and local agent settings
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.codex/
+.claude/
+.agents/
+
+# Temporary and backup files
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+
+# Local Docker overrides and volumes
+docker-compose.override.yml
+.docker-data/
+
+# Keep reproducibility files in Git:
+#   uv.lock
+#   demo/package-lock.json
