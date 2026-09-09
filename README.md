@@ -4,6 +4,23 @@
 
 它不是文字聊天套壳。浏览器持续采集麦克风，后端完成语音检测、中文识别、大模型回复和语音合成，再把声音流式送回浏览器。用户可以在 AI 说话时直接插话。
 
+## 界面预览
+
+![部署完成后的语音交互首页](docs/screenshots/home-desktop.png)
+
+<table>
+  <tr>
+    <td width="68%"><img src="docs/screenshots/settings-desktop.png" alt="模型与音频设置界面"></td>
+    <td width="32%"><img src="docs/screenshots/home-mobile.png" alt="移动端语音交互首页"></td>
+  </tr>
+  <tr>
+    <td align="center">模型与音频设置</td>
+    <td align="center">移动端页面</td>
+  </tr>
+</table>
+
+首页中央的光球会随会话状态变化。点击光球开始通话，浏览器取得麦克风权限后即可直接说话。
+
 ```text
 浏览器麦克风
     ↓ 24 kHz PCM
@@ -27,23 +44,9 @@ Qwen3-TTS MLX
 - 默认模型是 Qwen3-8B Q4，建议至少预留 20GB 磁盘空间
 - 建议使用 Chrome 或 Edge，Safari 也可以运行，但音频设备切换能力较少
 
-Intel Mac、Windows、Linux 和 NVIDIA CUDA 的通用思路见[完整部署方案](./本地赛博%20AI%20女友完整部署方案.md)，但本仓库的自动脚本没有为这些平台适配。
+本仓库的自动脚本没有适配 Intel Mac、Windows、Linux 或 NVIDIA CUDA。当前部署范围仅限 Apple Silicon Mac。
 
-## 为什么不是全部放进 Docker
-
-Docker Compose 负责官方浏览器 Demo、角色配置挂载和容器重启。LLM、STT 和 TTS 在 macOS 宿主机运行。
-
-原因很直接：Docker Desktop 的 Linux 虚拟机不能使用 macOS 的 Metal 和 MLX。把模型也塞进容器会退回 CPU，实时语音延迟会明显增加。`./scripts/up.sh` 把 Compose 和宿主机模型进程编排成一个启动入口。
-
-默认端口：
-
-| 服务 | 运行位置 | 地址 |
-|---|---|---|
-| 浏览器界面 | Docker Compose | `http://127.0.0.1:7860` |
-| speech-to-speech Realtime | macOS 宿主机 | `ws://127.0.0.1:8765/v1/realtime` |
-| llama.cpp | macOS 宿主机 | `http://127.0.0.1:8080` |
-
-三个服务都只监听本机地址，不会默认暴露到局域网。
+> 请使用 `./scripts/up.sh` 启动完整服务。单独执行 `docker compose up` 只会启动浏览器界面，不会启动本机模型。
 
 ## 一、安装系统依赖
 
@@ -99,11 +102,11 @@ docker compose version
 
 ## 二、取得项目代码
 
-GitHub 仓库创建完成后，其他用户可以执行：
+克隆项目并进入目录：
 
 ```bash
-git clone https://github.com/<你的用户名>/<仓库名>.git
-cd <仓库名>
+git clone https://github.com/qinsg/ai-girlfriend.git
+cd ai-girlfriend
 ```
 
 如果通过 ZIP 下载源码，需要恢复脚本的执行权限：
@@ -395,58 +398,23 @@ brew reinstall llama.cpp
 
 脚本只会停止 PID 文件中且命令行与 `llama-server` 或 `speech-to-speech` 匹配的进程，不会按名称误杀其他程序。
 
-## 十、准备上传 GitHub
-
-仓库应提交源代码、配置模板和锁文件，不应提交模型、日志、密钥、缓存和个人参考音频。如果当前目录还不是 Git 仓库，先执行：
-
-```bash
-git init
-```
-
-然后检查忽略规则：
-
-```bash
-git status --short
-git status --ignored --short
-git check-ignore -v .env logs/llama.log voices/xiaoman/reference.wav
-```
-
-最后一条命令应显示这三个文件都被 `.gitignore` 排除。
-
-加入文件并查看待提交清单：
-
-```bash
-git add .
-git status
-```
-
-先认真查看 `git status`。确认没有 `.env`、日志、模型文件和个人音频后再提交：
-
-```bash
-git commit -m "Initial local speech-to-speech deployment"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git push -u origin main
-```
-
-建议提交 `uv.lock` 和 `demo/package-lock.json`。它们锁定 Python与前端依赖版本，可以减少另一台机器安装出不同结果的概率。
-
 ## 项目目录
 
 ```text
 .
 ├── config/                     # 角色和音色配置
-├── demo/                       # 官方 Realtime 浏览器客户端
+├── demo/                       # Realtime 浏览器客户端与首页背景图
+├── docs/screenshots/           # README 使用的界面截图
 ├── scripts/                    # 初始化、启动、停止和诊断脚本
 ├── src/speech_to_speech/       # 官方语音管线
 ├── voices/                     # 本机声音克隆素材，不提交音频
 ├── docker-compose.yml          # 浏览器 Demo 容器
 ├── .env.example                # 可提交的配置模板
 ├── pyproject.toml              # Python 项目与依赖
-└── uv.lock                     # Python 依赖锁文件，应提交
+└── uv.lock                     # Python 依赖锁文件
 ```
 
-更完整的技术选型、原教程升级对照和其他平台说明见[本地赛博 AI 女友完整部署方案](./本地赛博%20AI%20女友完整部署方案.md)。Hugging Face 上游原始说明保存在 [`UPSTREAM.md`](./UPSTREAM.md)。
+Hugging Face 上游原始说明保存在 [`UPSTREAM.md`](./UPSTREAM.md)。
 
 ## 许可证
 

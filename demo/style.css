@@ -62,7 +62,7 @@ body {
 
 body {
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  background: radial-gradient(ellipse at 50% 20%, #1a1c28 0%, var(--bg) 60%);
+  background: var(--bg);
   color: var(--text);
   min-height: 100vh;
   overflow-x: hidden;
@@ -86,6 +86,43 @@ a:hover {
   display: grid;
   grid-template-rows: auto 1fr auto;
   min-height: 100vh;
+  position: relative;
+  isolation: isolate;
+}
+
+#app::before,
+#app::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#app::before {
+  z-index: -2;
+  background: url("assets/companion-hero.jpg") 58% center / cover no-repeat;
+  filter: saturate(0.86) contrast(1.03);
+  transform: scale(1.01);
+}
+
+#app::after {
+  z-index: -1;
+  background:
+    radial-gradient(circle at 50% 52%, rgba(7, 8, 14, 0.48) 0 18%, rgba(7, 8, 14, 0.18) 36%, transparent 56%),
+    linear-gradient(90deg, rgba(6, 7, 12, 0.82) 0%, rgba(6, 7, 12, 0.58) 44%, rgba(6, 7, 12, 0.18) 76%, rgba(6, 7, 12, 0.28) 100%),
+    linear-gradient(180deg, rgba(6, 7, 12, 0.35) 0%, rgba(6, 7, 12, 0.08) 48%, rgba(6, 7, 12, 0.62) 100%);
+}
+
+@media (max-width: 600px) {
+  #app::before {
+    background-position: 90% center;
+  }
+
+  #app::after {
+    background:
+      radial-gradient(circle at 50% 52%, rgba(7, 8, 14, 0.54) 0 20%, rgba(7, 8, 14, 0.24) 42%, transparent 64%),
+      linear-gradient(180deg, rgba(6, 7, 12, 0.48) 0%, rgba(6, 7, 12, 0.12) 42%, rgba(6, 7, 12, 0.66) 100%);
+  }
 }
 
 .hidden {
