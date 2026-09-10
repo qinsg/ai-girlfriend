@@ -2,16 +2,18 @@
 
 import { $ } from "./dom.js";
 
-const AVATAR_FPS = 25;
-const PCM_BYTES_PER_MS = 48;
+const VISEME_COUNT = 6;
+const VISEME_INTERVAL_MS = 55;
+const VISEME_GATE = 0.025;
+const VISEME_FULL_SCALE = 0.46;
 
 /**
- * Keeps the character alive continuously and queues short lip-sync clips over
- * the idle stream. Rendering and playback run independently, so the next clip
- * can be prepared while the current one is playing.
+ * Keeps the LivePortrait idle stream visible and overlays one cached, sharp
+ * mouth pose while assistant audio is playing. No per-response video render is
+ * involved: the already-playing output analyser selects a pose in real time.
  */
 export class AvatarView {
-  /** @param {{onState?: (state: "preparing" | "playing" | "idle") => void}} [options] */
+  /** @param {{onState?: (state: "playing" | "idle") => void}} [options] */
   constructor(options = {}) {
     /** @type {HTMLElement} */
     this.card = $("#avatar-card");
@@ -19,44 +21,52 @@ export class AvatarView {
     this.image = $("#avatar-image");
     /** @type {HTMLVideoElement} */
     this.idleVideo = $("#avatar-idle-video");
-    /** @type {HTMLVideoElement} */
-    this.speechVideo = $("#avatar-speech-video");
+    /** @type {HTMLImageElement} */
+    this.visemeImage = $("#avatar-viseme-image");
     /** @type {HTMLElement} */
     this.name = $("#avatar-name");
     /** @type {HTMLElement} */
     this.status = $("#avatar-status");
     this.enabled = false;
+    this.speaking = false;
+    this.audioActive = false;
+    this.visemesReady = false;
     this.character = "xiaoman";
-    this.audioOutputId = "";
-    this.sequence = 0;
-    this.responseId = "";
-    this.nextFrame = 0;
-    this.pendingRenders = 0;
-    this.streamEnded = true;
-    this.playing = false;
-    this.renderTail = Promise.resolve();
-    /** @type {{url?: string, pcm: ArrayBuffer, fallback: (pcm: ArrayBuffer) => void}[]} */
-    this.playbackQueue = [];
-    /** @type {Set<AbortController>} */
-    this.requests = new Set();
+    this.visemeLevel = 0;
+    this.lastVisemeUpdate = 0;
+    this.lastAudibleAt = 0;
+    this.loadSequence = 0;
+    /** @type {string[]} */
+    this.visemeUrls = [];
     this.onState = options.onState || (() => {});
 
     this.idleVideo.addEventListener("loadeddata", () => {
       this.idleVideo.classList.add("ready");
-      if (!this.playing && this.pendingRenders === 0) this.status.textContent = "本地数字人在线";
+      if (!this.speaking) this.status.textContent = "本地数字人在线";
     });
     this.idleVideo.addEventListener("error", () => {
       this.idleVideo.classList.remove("ready");
       if (this.enabled) this.status.textContent = "待机视频加载失败";
     });
+
+    const tick = (now) => {
+      this._updateViseme(now);
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
 
   /** @param {boolean} enabled */
   setEnabled(enabled) {
     this.enabled = enabled;
     this.card.classList.toggle("avatar-enabled", enabled);
-    if (enabled) this._loadIdleVideo();
-    else this._unloadIdleVideo();
+    if (enabled) {
+      this._loadIdleVideo();
+      void this._loadVisemes();
+    } else {
+      this._unloadIdleVideo();
+      this._hideViseme();
+    }
     this.status.textContent = enabled ? "正在加载待机画面" : "静态角色照片";
   }
 
@@ -67,177 +77,124 @@ export class AvatarView {
     this.image.src = preset.avatar || `assets/avatars/${this.character}.png`;
     this.image.alt = (preset.label || this.character).split("·")[0].trim();
     this.name.textContent = this.image.alt;
-    if (this.enabled) this._loadIdleVideo();
-  }
-
-  /** @param {string} deviceId */
-  setAudioOutput(deviceId) {
-    this.audioOutputId = deviceId || "";
-  }
-
-  /**
-   * Queue one short TTS audio chunk. The render requests stay ordered because
-   * each chunk continues from the frame where the preceding one ended.
-   * @param {{audio: Blob, pcm: ArrayBuffer, responseId: string, chunkIndex?: number}} detail
-   * @param {(pcm: ArrayBuffer) => void} fallback
-   */
-  renderChunk(detail, fallback) {
-    if (!this.enabled) {
-      fallback(detail.pcm);
-      return;
+    if (this.enabled) {
+      this._loadIdleVideo();
+      void this._loadVisemes();
     }
-
-    if (detail.responseId !== this.responseId) {
-      this.cancel();
-      this.responseId = detail.responseId;
-      this.streamEnded = false;
-      this.nextFrame = Math.max(0, Math.floor((this.idleVideo.currentTime || 0) * AVATAR_FPS));
-    }
-
-    const sequence = this.sequence;
-    this.pendingRenders += 1;
-    this.card.classList.add("preparing-speech");
-    this.status.textContent = this.playing ? "正在说话" : "正在准备第一段口型";
-    if (!this.playing) this.onState("preparing");
-
-    this.renderTail = this.renderTail
-      .catch(() => {})
-      .then(() => this._renderOne(detail, fallback, sequence))
-      .finally(() => {
-        if (sequence !== this.sequence) return;
-        this.pendingRenders = Math.max(0, this.pendingRenders - 1);
-        if (this.pendingRenders === 0) this.card.classList.remove("preparing-speech");
-        this._settleIfIdle();
-      });
   }
 
-  /** @param {string} responseId */
-  finishResponse(responseId) {
-    if (responseId !== this.responseId) return;
-    this.streamEnded = true;
-    this._settleIfIdle();
-  }
+  /** Kept for the shared settings contract; viseme images produce no audio. */
+  setAudioOutput(_deviceId) {}
 
-  /** @param {{audio: Blob, pcm: ArrayBuffer}} detail @param {(pcm: ArrayBuffer) => void} fallback @param {number} sequence */
-  async _renderOne(detail, fallback, sequence) {
-    const request = new AbortController();
-    this.requests.add(request);
-    try {
-      const response = await fetch(
-        `api/avatar/lipsync?character=${encodeURIComponent(this.character)}&start_frame=${this.nextFrame}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "audio/wav" },
-          body: detail.audio,
-          signal: request.signal,
-        },
-      );
-      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
-      const videoBlob = await response.blob();
-      if (sequence !== this.sequence) return;
-      this.nextFrame = Number(response.headers.get("x-avatar-next-frame")) || this.nextFrame;
-      this.playbackQueue.push({ url: URL.createObjectURL(videoBlob), pcm: detail.pcm, fallback });
-    } catch (error) {
-      if (request.signal.aborted || sequence !== this.sequence) return;
-      console.warn("[avatar] chunk render failed, falling back to audio:", error);
-      this.playbackQueue.push({ pcm: detail.pcm, fallback });
-    } finally {
-      this.requests.delete(request);
-    }
-    void this._pumpPlayback(sequence);
-  }
-
-  /** @param {number} sequence */
-  async _pumpPlayback(sequence) {
-    if (this.playing || sequence !== this.sequence) return;
-    this.playing = true;
-    try {
-      while (this.playbackQueue.length && sequence === this.sequence) {
-        const clip = this.playbackQueue.shift();
-        if (!clip) continue;
-        if (clip.url) {
-          await this._playSpeechClip(clip.url, sequence);
-          URL.revokeObjectURL(clip.url);
-        } else {
-          clip.fallback(clip.pcm);
-          await new Promise((resolve) => setTimeout(resolve, clip.pcm.byteLength / PCM_BYTES_PER_MS));
-        }
-      }
-    } finally {
-      if (sequence === this.sequence) {
-        this.playing = false;
-        this.speechVideo.classList.remove("playing");
-        this._settleIfIdle();
+  /** @param {boolean} speaking */
+  setSpeaking(speaking) {
+    const next = Boolean(speaking && this.enabled);
+    if (next === this.speaking) return;
+    this.speaking = next;
+    if (next) {
+      this.status.textContent = this.visemesReady ? "正在说话" : "正在准备高清口型";
+    } else {
+      // response.done can arrive while the AudioWorklet still has queued PCM.
+      // The analyser below owns the visual stop time, so do not hide early.
+      if (!this.audioActive) {
+        this._hideViseme();
+        this.status.textContent = this.enabled ? "本地数字人在线" : "静态角色照片";
       }
     }
-  }
-
-  /** @param {string} url @param {number} sequence */
-  async _playSpeechClip(url, sequence) {
-    this.speechVideo.src = url;
-    this.speechVideo.currentTime = 0;
-    if (this.audioOutputId && typeof this.speechVideo.setSinkId === "function") {
-      await this.speechVideo.setSinkId(this.audioOutputId);
-    }
-    if (sequence !== this.sequence) return;
-    this.speechVideo.classList.add("playing");
-    this.status.textContent = "正在说话";
-    this.onState("playing");
-    await this.speechVideo.play();
-    await new Promise((resolve) => {
-      const done = () => {
-        this.speechVideo.removeEventListener("ended", done);
-        this.speechVideo.removeEventListener("error", done);
-        resolve(undefined);
-      };
-      this.speechVideo.addEventListener("ended", done, { once: true });
-      this.speechVideo.addEventListener("error", done, { once: true });
-    });
   }
 
   cancel() {
-    this.sequence += 1;
-    for (const request of this.requests) request.abort();
-    this.requests.clear();
-    for (const clip of this.playbackQueue) if (clip.url) URL.revokeObjectURL(clip.url);
-    this.playbackQueue = [];
-    this.renderTail = Promise.resolve();
-    this.pendingRenders = 0;
-    this.streamEnded = true;
-    this.responseId = "";
-    this.playing = false;
-    this.card.classList.remove("preparing-speech");
-    this.speechVideo.pause();
-    this.speechVideo.classList.remove("playing");
-    this.speechVideo.removeAttribute("src");
-    this.speechVideo.load();
-    this.status.textContent = this.enabled ? "本地数字人在线" : "静态角色照片";
-    this.onState("idle");
+    this.setSpeaking(false);
   }
 
   _loadIdleVideo() {
-    const url = `api/avatar/idle/${encodeURIComponent(this.character)}?v=idle-stream-v1`;
+    const url = `api/avatar/idle/${encodeURIComponent(this.character)}?v=idle-stream-v2`;
     if (this.idleVideo.getAttribute("src") === url) return;
     this.idleVideo.classList.remove("ready");
     this.idleVideo.src = url;
     this.idleVideo.load();
-    void this.idleVideo.play().catch(() => {
-      // The video is muted, so modern browsers normally allow autoplay. A
-      // user gesture from starting the call gives us another chance later.
-    });
+    void this.idleVideo.play().catch(() => {});
+  }
+
+  async _loadVisemes() {
+    const sequence = ++this.loadSequence;
+    this.visemesReady = false;
+    this._hideViseme();
+    const character = encodeURIComponent(this.character);
+    const urls = Array.from(
+      { length: VISEME_COUNT },
+      (_, level) => `api/avatar/viseme/${character}/${level}?v=viseme-v4`,
+    );
+    try {
+      await Promise.all(urls.map((url) => new Promise((resolve, reject) => {
+        const preload = new Image();
+        preload.onload = resolve;
+        preload.onerror = reject;
+        preload.src = url;
+      })));
+      if (sequence !== this.loadSequence) return;
+      this.visemeUrls = urls;
+      this.visemeImage.src = urls[0];
+      this.visemesReady = true;
+      this.status.textContent = this.speaking ? "正在说话" : "本地数字人在线";
+    } catch (error) {
+      if (sequence !== this.loadSequence) return;
+      console.warn("[avatar] high-resolution visemes failed to load:", error);
+      this.status.textContent = "高清口型加载失败";
+    }
+  }
+
+  /** @param {number} now */
+  _updateViseme(now) {
+    if (!this.enabled || !this.visemesReady) {
+      this._hideViseme();
+      return;
+    }
+    if (now - this.lastVisemeUpdate < VISEME_INTERVAL_MS) return;
+    this.lastVisemeUpdate = now;
+    const raw = Number.parseFloat(
+      getComputedStyle(document.documentElement).getPropertyValue("--ai-audio-level"),
+    ) || 0;
+    if (raw > VISEME_GATE) {
+      this.lastAudibleAt = now;
+      if (!this.audioActive) {
+        this.audioActive = true;
+        this.status.textContent = "正在说话";
+        this.onState("playing");
+      }
+    } else if (!this.audioActive || now - this.lastAudibleAt > 140) {
+      if (this.audioActive) {
+        this.audioActive = false;
+        this.status.textContent = this.enabled ? "本地数字人在线" : "静态角色照片";
+        this.onState("idle");
+      }
+      this._hideViseme();
+      return;
+    }
+    const normalized = Math.max(0, Math.min(1, (raw - VISEME_GATE) / VISEME_FULL_SCALE));
+    let next = Math.round(Math.pow(normalized, 0.72) * (VISEME_COUNT - 1));
+    // Let the mouth open quickly, but close one pose at a time to avoid chatter.
+    if (next < this.visemeLevel) next = Math.max(next, this.visemeLevel - 1);
+    if (next !== this.visemeLevel) {
+      this.visemeLevel = next;
+      this.visemeImage.src = this.visemeUrls[next];
+    }
+    this.visemeImage.classList.add("active");
+  }
+
+  _hideViseme() {
+    this.visemeLevel = 0;
+    this.visemeImage.classList.remove("active");
+    if (this.visemeUrls[0]) this.visemeImage.src = this.visemeUrls[0];
   }
 
   _unloadIdleVideo() {
+    this.loadSequence += 1;
+    this.visemesReady = false;
+    this.audioActive = false;
     this.idleVideo.pause();
     this.idleVideo.classList.remove("ready");
     this.idleVideo.removeAttribute("src");
     this.idleVideo.load();
-  }
-
-  _settleIfIdle() {
-    if (this.pendingRenders || this.playing || this.playbackQueue.length || !this.streamEnded) return;
-    this.card.classList.remove("preparing-speech");
-    this.status.textContent = "本地数字人在线";
-    this.onState("idle");
   }
 }

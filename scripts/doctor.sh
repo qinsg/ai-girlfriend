@@ -21,10 +21,8 @@ done
 [[ -x .runtime/fasterliveportrait-mlx/.venv/bin/python ]] \
   && echo "[ok] FasterLivePortrait-MLX" \
   || echo "[缺少] 请运行 ./scripts/bootstrap-avatar-macos.sh"
-if [[ -f models/avatar/musetalk-1.5-fp16/unet.safetensors \
-  && -f models/avatar/musetalk-1.5-fp16/vae.safetensors \
-  && -f models/avatar/musetalk-1.5-fp16/whisper_encoder.safetensors ]]; then
-  echo "[ok] MuseTalk 1.5 MLX"
+if [[ -f models/avatar/checkpoints/liveportrait_mlx/stitching_lip.npz ]]; then
+  echo "[ok] LivePortrait high-resolution visemes"
 else
   echo "[缺少] 请运行 ./scripts/bootstrap-avatar-macos.sh"
 fi

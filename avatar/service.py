@@ -1,9 +1,9 @@
-"""Continuous idle portrait and chunked lip-sync service for Apple Silicon.
+"""Continuous idle portrait and cached-viseme service for Apple Silicon.
 
 The heavy MLX runtime lives under ``.runtime/`` and its checkpoints under
 ``models/``. Both directories are machine-local. This small adapter is the part
 owned by this repository: LivePortrait creates a seamless blinking idle loop;
-MuseTalk MLX changes only the lower face for short TTS audio chunks.
+LivePortrait also pre-renders sharp mouth poses selected by browser audio level.
 """
 
 from __future__ import annotations
@@ -19,10 +19,10 @@ import tempfile
 import time
 
 import cv2
+import numpy as np
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from starlette.background import BackgroundTask
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -42,17 +42,19 @@ JOB_ROOT = Path(
     os.environ.get("AVATAR_JOB_DIR", PROJECT_ROOT / ".runtime" / "avatar-jobs")
 ).expanduser().resolve()
 PROFILE = os.environ.get("AVATAR_MLX_PROFILE", "quality").strip() or "quality"
-MAX_AUDIO_BYTES = int(os.environ.get("AVATAR_MAX_AUDIO_BYTES", str(4 * 1024 * 1024)))
-MUSE_MODEL_DIR = Path(
-    os.environ.get(
-        "AVATAR_MUSETALK_MODEL_DIR",
-        PROJECT_ROOT / "models" / "avatar" / "musetalk-1.5-fp16",
-    )
-).expanduser().resolve()
 IDLE_DIR = Path(
     os.environ.get("AVATAR_IDLE_DIR", PROJECT_ROOT / ".runtime" / "avatar-idle")
 ).expanduser().resolve()
-IDLE_DRIVER = RUNTIME_DIR / "assets" / "examples" / "driving" / "d14.mp4"
+VISEME_DIR = Path(
+    os.environ.get("AVATAR_VISEME_DIR", PROJECT_ROOT / ".runtime" / "avatar-visemes")
+).expanduser().resolve()
+IDLE_DRIVER = RUNTIME_DIR / "assets" / "examples" / "driving" / "d13.mp4"
+IDLE_CACHE_VERSION = 2
+VISEME_CACHE_VERSION = 4
+# Ratios above roughly 0.25 over-stretch the LivePortrait lip-retargeting
+# keypoints on photographic faces: teeth remain sharp, but the upper lip and
+# mouth corners visibly split. Six closer poses preserve motion without tearing.
+VISEME_LIP_RATIOS = (0.0, 0.04, 0.08, 0.12, 0.17, 0.22)
 
 PORTRAITS = {
     "xiaoman": PROJECT_ROOT / "demo" / "assets" / "avatars" / "xiaoman.png",
@@ -81,13 +83,9 @@ from src.pipelines.gradio_live_portrait_pipeline import (  # noqa: E402
 )
 from src.runtime_assets import resolve_runtime_config  # noqa: E402
 
-from avatar.lipsync import MuseTalkLipSync  # noqa: E402
-
-
 app = FastAPI(title="Local audio-driven avatar")
 render_lock = asyncio.Lock()
 pipeline: GradioLivePortraitPipeline | None = None
-lipsync_pipeline: MuseTalkLipSync | None = None
 
 
 def _source_path(character: str) -> Path:
@@ -121,15 +119,132 @@ def _idle_paths(character: str) -> tuple[Path, Path]:
     return IDLE_DIR / f"{character}.mp4", IDLE_DIR / f"{character}.json"
 
 
+def _viseme_paths(character: str) -> tuple[list[Path], Path]:
+    _source_path(character)
+    directory = VISEME_DIR / character
+    return [directory / f"{index}.png" for index in range(len(VISEME_LIP_RATIOS))], directory / "meta.json"
+
+
+def _mouth_alpha(
+    image_shape: tuple[int, ...], landmarks: np.ndarray
+) -> tuple[np.ndarray, list[int]]:
+    """Build a feathered mouth mask in source-image coordinates.
+
+    The browser displays portrait media with ``object-fit: cover``. Embedding
+    this mask in the PNG alpha channel makes the patch follow exactly the same
+    crop as the idle video; a CSS mask positioned relative to the card does not.
+    """
+    height, width = image_shape[:2]
+    # LivePortrait's 106-point layout defines 48/66 as the mouth corners,
+    # 90/102 as the vertical lip pair, and 52/61 as the lip centre pair.
+    # Use those actual pixels so a different portrait does not need tuning.
+    lip_center = (landmarks[52] + landmarks[61]) / 2
+    mouth_width = float(np.linalg.norm(landmarks[48] - landmarks[66]))
+    mouth_height = float(np.linalg.norm(landmarks[90] - landmarks[102]))
+    center_x, center_y = (int(round(value)) for value in lip_center)
+    radius_x = max(12, int(mouth_width * 0.72))
+    radius_y = max(8, int(mouth_width * 0.22), int(mouth_height * 1.6))
+
+    alpha = np.zeros((height, width), dtype=np.uint8)
+    cv2.ellipse(
+        alpha,
+        (center_x, center_y),
+        (radius_x, radius_y),
+        0,
+        0,
+        360,
+        255,
+        thickness=-1,
+        lineType=cv2.LINE_AA,
+    )
+    blur_radius = max(3, int(mouth_width * 0.10))
+    if blur_radius % 2 == 0:
+        blur_radius += 1
+    alpha = cv2.GaussianBlur(alpha, (blur_radius, blur_radius), 0)
+    bounds = [
+        max(0, center_x - radius_x - blur_radius),
+        max(0, center_y - radius_y - blur_radius),
+        min(width, center_x + radius_x + blur_radius),
+        min(height, center_y + radius_y + blur_radius),
+    ]
+    return alpha, bounds
+
+
+def _ensure_visemes(character: str) -> tuple[list[Path], Path]:
+    """Cache sharp LivePortrait mouth poses once; runtime playback is model-free."""
+    paths, meta_path = _viseme_paths(character)
+    if meta_path.is_file() and all(path.is_file() for path in paths):
+        try:
+            cached = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            cached = {}
+        if cached.get("cacheVersion") == VISEME_CACHE_VERSION:
+            return paths, meta_path
+
+    JOB_ROOT.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(tempfile.mkdtemp(prefix=f"{character}-visemes-", dir=JOB_ROOT))
+    pipe = _load_pipeline()
+    pipe._ensure_models_loaded(is_animal=False)
+    pipe.set_mlx_profile(PROFILE)
+    try:
+        source_landmarks = _face_landmarks(pipe, _source_path(character))
+        rendered: list[np.ndarray] = []
+        for index, ratio in enumerate(VISEME_LIP_RATIOS):
+            _crop, full_rgb = pipe.execute_image(
+                input_eye_ratio=0.35,
+                input_lip_ratio=ratio,
+                input_image=str(_source_path(character)),
+                flag_do_crop=True,
+            )
+            rendered.append(full_rgb)
+
+        alpha, mouth_bounds = _mouth_alpha(rendered[0].shape, source_landmarks)
+        generated: list[Path] = []
+        for index, full_rgb in enumerate(rendered):
+            output = work_dir / f"{index}.png"
+            full_bgr = cv2.cvtColor(full_rgb, cv2.COLOR_RGB2BGR)
+            mouth_bgra = np.dstack((full_bgr, alpha))
+            if not cv2.imwrite(str(output), mouth_bgra):
+                raise RuntimeError(f"Could not write viseme image: {output}")
+            generated.append(output)
+
+        target_dir = meta_path.parent
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for source, target in zip(generated, paths, strict=True):
+            source.replace(target)
+        temporary_meta = work_dir / "meta.json"
+        temporary_meta.write_text(json.dumps({
+            "cacheVersion": VISEME_CACHE_VERSION,
+            "lipRatios": VISEME_LIP_RATIOS,
+            "width": int(full_rgb.shape[1]),
+            "height": int(full_rgb.shape[0]),
+            "mouthBounds": mouth_bounds,
+            "alphaMasked": True,
+            "engine": "LivePortrait lip retargeting",
+        }))
+        temporary_meta.replace(meta_path)
+        return paths, meta_path
+    finally:
+        pipe._park_mlx_models()
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def _face_landmarks(pipe: GradioLivePortraitPipeline, frame_path: Path) -> np.ndarray:
+    frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise RuntimeError(f"Could not read portrait frame: {frame_path}")
+    faces = pipe.model_dict["face_analysis"].predict(frame)
+    if not len(faces):
+        raise RuntimeError("Could not detect a face in the portrait frame")
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    return pipe.model_dict["landmark"].predict(rgb, faces[0])
+
+
 def _face_box(pipe: GradioLivePortraitPipeline, frame_path: Path) -> tuple[int, int, int, int]:
     frame = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
     if frame is None:
         raise RuntimeError(f"Could not read idle frame: {frame_path}")
-    faces = pipe.model_dict["face_analysis"].predict(frame)
-    if not len(faces):
-        raise RuntimeError("Could not detect a face in the generated idle video")
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    landmarks = pipe.model_dict["landmark"].predict(rgb, faces[0])
+    landmarks = _face_landmarks(pipe, frame_path)
     x_min, y_min = landmarks.min(axis=0)
     x_max, y_max = landmarks.max(axis=0)
     face_width = float(x_max - x_min)
@@ -146,7 +261,12 @@ def _ensure_idle(character: str) -> tuple[Path, Path]:
     """Build one cached, silent, seamless eye-motion loop per portrait."""
     idle_path, meta_path = _idle_paths(character)
     if idle_path.is_file() and meta_path.is_file():
-        return idle_path, meta_path
+        try:
+            cached = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            cached = {}
+        if cached.get("cacheVersion") == IDLE_CACHE_VERSION:
+            return idle_path, meta_path
     if not IDLE_DRIVER.is_file():
         raise RuntimeError(f"Idle driving video is missing: {IDLE_DRIVER}")
 
@@ -188,12 +308,19 @@ def _ensure_idle(character: str) -> tuple[Path, Path]:
         )
         box = _face_box(pipe, first_frame)
         temporary_idle = idle_path.with_suffix(".building.mp4")
+        # d13 stays centred and supplies two ordinary blinks. Stretch the calm
+        # open-eye intervals to create unequal 5.5s/6.5s blink spacing instead
+        # of the old expression-test clip's repeated stare and side glances.
         subprocess.run(
             [
                 "ffmpeg", "-y", "-v", "error", "-i", str(generated),
                 "-filter_complex",
-                "[0:v]fps=25,scale=640:-2,split[a][b];[b]reverse[r];[a][r]concat=n=2:v=1:a=0[v]",
-                "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "19",
+                "[0:v]trim=start=0:end=1.5,setpts=PTS-STARTPTS[a];"
+                "[0:v]trim=start=1.5:end=2,setpts=8*(PTS-STARTPTS)[b];"
+                "[0:v]trim=start=2:end=3.5,setpts=PTS-STARTPTS[c];"
+                "[0:v]trim=start=3.5:end=4,setpts=10*(PTS-STARTPTS)[d];"
+                "[a][b][c][d]concat=n=4:v=1:a=0,fps=25,scale=640:-2[v]",
+                "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temporary_idle),
             ],
             check=True,
@@ -213,37 +340,28 @@ def _ensure_idle(character: str) -> tuple[Path, Path]:
             int(box[2] * scale_x), int(box[3] * scale_y),
         ]
         temporary_idle.replace(idle_path)
-        meta_path.write_text(json.dumps({"fps": 25, "faceBox": scaled_box}))
+        meta_path.write_text(json.dumps({
+            "cacheVersion": IDLE_CACHE_VERSION,
+            "fps": 25,
+            "faceBox": scaled_box,
+            "driver": IDLE_DRIVER.name,
+        }))
         return idle_path, meta_path
     finally:
         pipe._park_mlx_models()
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
-def _load_lipsync() -> MuseTalkLipSync:
-    global lipsync_pipeline
-    if lipsync_pipeline is None:
-        required = ("config.json", "unet.safetensors", "vae.safetensors", "whisper_encoder.safetensors")
-        missing = [name for name in required if not (MUSE_MODEL_DIR / name).is_file()]
-        if missing:
-            raise RuntimeError("MuseTalk MLX weights are missing: " + ", ".join(missing))
-        lipsync_pipeline = MuseTalkLipSync(MUSE_MODEL_DIR)
-    return lipsync_pipeline
-
-
-def _cleanup_job(video_path: Path) -> None:
-    shutil.rmtree(video_path.parent, ignore_errors=True)
-
-
 @app.get("/health")
 def health() -> dict:
     return {
         "status": "ready",
-        "engine": "LivePortrait idle stream + MuseTalk 1.5 MLX",
+        "engine": "LivePortrait idle stream + cached high-resolution visemes",
         "profile": PROFILE,
-        "streamingChunks": True,
+        "streamingChunks": False,
         "idleVideo": True,
-        "museTalkLoaded": lipsync_pipeline is not None,
+        "highResolutionVisemes": True,
+        "visemeCount": len(VISEME_LIP_RATIOS),
         "characters": sorted(PORTRAITS),
         "modelsLoaded": bool(pipeline and pipeline.model_dict),
     }
@@ -253,13 +371,13 @@ def health() -> dict:
 async def warmup(character: str = Query("xiaoman")) -> dict:
     async with render_lock:
         started = time.perf_counter()
-        idle_path, meta_path = await asyncio.to_thread(_ensure_idle, character)
-        lip = await asyncio.to_thread(_load_lipsync)
-        await asyncio.to_thread(lip.warmup, character, idle_path, meta_path)
+        idle_path, _idle_meta = await asyncio.to_thread(_ensure_idle, character)
+        visemes, _viseme_meta = await asyncio.to_thread(_ensure_visemes, character)
         return {
             "status": "ready",
             "character": character,
             "idle": idle_path.name,
+            "visemes": len(visemes),
             "seconds": round(time.perf_counter() - started, 3),
         }
 
@@ -276,51 +394,20 @@ async def idle(character: str) -> FileResponse:
     return FileResponse(idle_path, media_type="video/mp4", filename=f"{character}-idle.mp4")
 
 
-@app.post("/lipsync")
-async def lipsync(
-    request: Request,
-    character: str = Query("xiaoman"),
-    start_frame: int = Query(0, ge=0),
-) -> FileResponse:
-    audio = await request.body()
-    if not audio:
-        raise HTTPException(status_code=400, detail="WAV body is empty")
-    if len(audio) > MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="WAV body is too large")
-    if len(audio) < 44 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
-        raise HTTPException(status_code=415, detail="Expected a PCM WAV request body")
-
+@app.get("/viseme/{character}/{level}")
+async def viseme(character: str, level: int) -> FileResponse:
+    if level < 0 or level >= len(VISEME_LIP_RATIOS):
+        raise HTTPException(status_code=404, detail="Unknown viseme level")
     async with render_lock:
-        started = time.perf_counter()
         try:
-            idle_path, meta_path = await asyncio.to_thread(_ensure_idle, character)
-            lip = await asyncio.to_thread(_load_lipsync)
-            JOB_ROOT.mkdir(parents=True, exist_ok=True)
-            job_dir = Path(tempfile.mkdtemp(prefix=f"{character}-lip-", dir=JOB_ROOT))
-            output = job_dir / "chunk.mp4"
-            next_frame, frame_count = await asyncio.to_thread(
-                lip.render_chunk,
-                character,
-                idle_path,
-                meta_path,
-                audio,
-                start_frame,
-                output,
-            )
+            paths, _meta_path = await asyncio.to_thread(_ensure_visemes, character)
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"MuseTalk lip-sync failed: {exc}") from exc
-
+            raise HTTPException(status_code=500, detail=f"Viseme generation failed: {exc}") from exc
     return FileResponse(
-        output,
-        media_type="video/mp4",
-        filename=f"{character}-chunk.mp4",
-        headers={
-            "X-Avatar-Render-Seconds": f"{time.perf_counter() - started:.3f}",
-            "X-Avatar-Start-Frame": str(start_frame),
-            "X-Avatar-Next-Frame": str(next_frame),
-            "X-Avatar-Frame-Count": str(frame_count),
-        },
-        background=BackgroundTask(_cleanup_job, output),
+        paths[level],
+        media_type="image/png",
+        filename=f"{character}-viseme-{level}.png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )

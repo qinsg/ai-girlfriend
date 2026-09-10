@@ -42,6 +42,7 @@
  * @property {NoiseGate} [noiseGate]
  * @property {string} [audioOutputId]
  * @property {boolean} [deferOutputAudio]
+ * @property {boolean} [captureOutputAudio]
  * @property {(call: {name: string, arguments: string, callId: string}) => Promise<{output: string, image?: string}>} [executeTool]
  */
 
@@ -50,7 +51,7 @@ import { OrbVisualiser, VIS_FFT_SIZE } from "./ws/orb-visualizer.js";
 import { SentAudioRecorder } from "./ws/user-audio-recorder.js";
 
 export const AUDIO_SAMPLE_RATE = 24_000;
-export const AUDIO_WORKLET_VERSION = "audio-24k-v5";
+export const AUDIO_WORKLET_VERSION = "audio-24k-v12";
 const MIC_CHUNK_MS = 40;
 const CAPTURE_CONFIG_TIMEOUT_MS = 2_000;
 const SPEAKING_OPEN_DB = -50;
@@ -138,6 +139,10 @@ export class S2sRealtimeClient extends EventTarget {
     this._playbackNode = null;
     this._playbackFrames = 0;
     this._deferOutputAudio = options.deferOutputAudio ?? false;
+    // Capture PCM into avatar-sized WAV chunks without changing the primary
+    // Web Audio playback path. This keeps speech continuous even when local
+    // lip-sync rendering falls behind or fails.
+    this._captureOutputAudio = options.captureOutputAudio ?? this._deferOutputAudio;
     this._deferredAudioByResponse = new Map();
     this._deferredChunkIndex = new Map();
     this._micAnalyser = null;
@@ -455,7 +460,7 @@ export class S2sRealtimeClient extends EventTarget {
     // when a fresh user gesture is required.
     if (this._ctx?.state === "suspended") void this._ctx.resume().catch(() => {});
     const responseId = event.responseId || this._activeResponseId || "response";
-    if (this._deferOutputAudio) {
+    if (this._captureOutputAudio) {
       const previous = this._deferredAudioByResponse.get(responseId) || new Uint8Array(0);
       const incoming = new Uint8Array(event.data);
       const combined = new Uint8Array(previous.byteLength + incoming.byteLength);
@@ -468,7 +473,8 @@ export class S2sRealtimeClient extends EventTarget {
         offset += DEFERRED_CHUNK_BYTES;
       }
       this._deferredAudioByResponse.set(responseId, combined.slice(offset));
-    } else {
+    }
+    if (!this._deferOutputAudio) {
       this.playPcm16(event.data);
     }
     this.dispatchEvent(new CustomEvent("audio-state", { detail: {

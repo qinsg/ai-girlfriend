@@ -2,7 +2,7 @@
 
 这是基于 Hugging Face [`speech-to-speech`](https://github.com/huggingface/speech-to-speech) 1.0.0 的本地实时语音项目，也是对[零度博客原教程](https://www.freedidi.com/24928.html)的 Apple Silicon 升级版。
 
-它不是文字聊天套壳。浏览器持续采集麦克风，后端完成语音检测、中文识别、大模型回复和语音合成；本机数字人服务维持持续活动的角色画面，并把回复语音分块转成口型。用户直接说话，角色以带声音的动态人像回应。
+它不是文字聊天套壳。浏览器持续采集麦克风，后端完成语音检测、中文识别、大模型回复和语音合成；本机数字人服务维持持续活动的角色画面，并用预生成的高清嘴形实时跟随回复声音。用户直接说话，角色以带声音的动态人像回应。
 
 ## 界面预览
 
@@ -32,18 +32,14 @@ Qwen3 8B GGUF + llama.cpp Metal
     ↓
 Qwen3-TTS MLX
     ↓
-约 1 秒一段的回复音频
-    ↓
-MuseTalk 1.5 MLX 下半脸口型
-    ↓
-连续播放的口型片段
+连续播放的回复音频 ── 输出强度分析 ── 6 档 LivePortrait 高清嘴形
 
-角色照片 ── LivePortrait MLX ── 持续循环的眨眼、视线与轻微呼吸
+角色照片 ── LivePortrait MLX ── 持续循环的自然眨眼和轻微视线动作
 ```
 
-页面不会在每轮回复后退回静态照片。无语音时，静音待机视频持续播放眨眼和视线动作；收到 TTS 音频后，浏览器每累计约 1 秒就立即提交一个口型片段，上一段播放时后台继续生成下一段。MuseTalk 只替换下半脸，避免为了放大嘴型而带动整张脸抖动。某一段生成失败时，浏览器会播放该段原始语音，不会丢失回复。
+页面不会在每轮回复后退回静态照片。无语音时，静音待机视频持续播放眨眼和轻微视线动作。首次预热时，LivePortrait 从角色照片生成 6 档高清嘴形。每张嘴形都是按人脸关键点定位、带透明通道的 PNG，浏览器按正在播放的声音强度实时切换，只覆盖嘴部区域。嘴形和待机画面使用相同的缩放与裁切规则，调整窗口大小不会让嘴唇移到鼻子或下巴上。
 
-在本仓库的 M3 Max 验证机上，预热后 1 秒音频生成 25 帧口型约需 1.02 秒。为兼顾速度和流畅度，MuseTalk 每秒计算 8 个神经口型关键帧，再插值到 25fps；启动脚本会预先编译这一常用形状。
+当前口型表达的是开口幅度，不是逐音素口型识别。它能跟随声音连续开合，不需要等待逐句视频生成，但嘴形不会精确对应每个汉字的发音。
 
 ## 当前支持范围
 
@@ -53,6 +49,7 @@ MuseTalk 1.5 MLX 下半脸口型
 - 已在 M3 Max、128GB 统一内存上完成端到端验证
 - 默认模型是 Qwen3-8B Q4，语音与数字人还会下载各自模型，建议至少预留 30GB 磁盘空间
 - 建议使用 Chrome 或 Edge，Safari 也可以运行，但音频设备切换能力较少
+- 数字人口型采用 6 档实时开合，重点是低延迟和画面连续，不是逐音素唇形同步
 
 本仓库的自动脚本没有适配 Intel Mac、Windows、Linux 或 NVIDIA CUDA。当前部署范围仅限 Apple Silicon Mac。
 
@@ -176,7 +173,7 @@ sed -n '1,200p' .env
 - Qwen3-TTS 1.7B MLX 6bit，用于语音合成
 - Silero VAD 和 Smart Turn，用于语音起止与轮次判断
 - FasterLivePortrait-MLX 权重，用于生成持续眨眼和视线动作的待机画面
-- MuseTalk 1.5 MLX 权重，用于按语音分块生成下半脸口型
+- LivePortrait lip-retargeting 权重，用于生成高清嘴形缓存
 
 模型下载和首次预热需要一些时间。终端最后出现下面的地址才算启动完成：
 
@@ -214,7 +211,7 @@ sed -n '1,200p' .env
 [ok] curl
 [ok] 官方 speech-to-speech
 [ok] FasterLivePortrait-MLX
-[ok] MuseTalk 1.5 MLX
+[ok] LivePortrait high-resolution visemes
 [ok] llama.cpp
 [ok] Realtime voice
 [ok] Continuous avatar
@@ -332,7 +329,7 @@ docker compose up -d --build demo
 3. 在 `avatar/service.py` 的 `PORTRAITS` 中登记同一个角色标识和照片路径。
 4. 执行 `./scripts/down.sh` 和 `./scripts/up.sh`，让服务生成该角色的待机缓存。
 
-嘴部、下巴和脸部轮廓必须清楚。图片不合适时，LivePortrait 可能检测不到脸，MuseTalk 也容易在嘴部边缘留下接缝。
+嘴部、下巴和脸部轮廓必须清楚。图片不合适时，LivePortrait 可能检测不到脸，生成的嘴形也会失真。
 
 如果只需要语音，不需要数字人，可在 `.env` 中设置：
 
@@ -440,11 +437,25 @@ tail -n 200 logs/avatar.log
 ./scripts/up.sh
 ```
 
-健康信息应包含 `"idleVideo":true` 和 `"streamingChunks":true`。首次启动需要生成待机循环并缓存角色全部帧，完成后页面应始终显示活动画面。开始回复时短暂显示“正在准备第一段口型”是正常现象；某个口型片段生成失败时，浏览器只对该段退回纯语音。
+健康信息应包含 `"idleVideo":true`、`"highResolutionVisemes":true` 和 `"visemeCount":6`。首次启动需要生成待机循环和 6 张高清嘴形。完成后页面会持续显示活动画面，AI 回复时嘴形立即跟随声音变化。
+
+### 嘴形错位、撕裂或仍显示旧效果
+
+当前嘴形缓存使用人脸关键点定位，并限制在 LivePortrait 稳定的开口范围。升级旧版本后，先强制刷新浏览器页面。Chrome 和 Edge 可使用 `Command+Shift+R`。
+
+如果仍显示旧嘴形，重新生成当前角色的本机缓存：
+
+```bash
+./scripts/down.sh
+rm -rf .runtime/avatar-visemes/xiaoman
+./scripts/up.sh
+```
+
+使用其他角色时，把 `xiaoman` 改成对应的角色标识。不要删除整个 `.runtime/` 或 `models/`，否则需要重新安装运行时或下载模型。
 
 ### 能听见开场白，但说话没有反应
 
-1. 强制刷新页面，确保加载的是 `audio-24k-v5` 前端。
+1. 强制刷新页面，确保加载的是 `audio-24k-v12` 前端。
 2. 在 Settings 的 Microphone 中选择 `MacBook Pro Microphone (Built-in)`。
 3. 把 Noise gate 拉到最左侧 `Off`。
 4. 确认麦克风按钮没有显示静音状态。
@@ -512,4 +523,4 @@ Hugging Face 上游原始说明保存在 [`UPSTREAM.md`](./UPSTREAM.md)。数字
 
 ## 许可证
 
-项目主体来自 Hugging Face `speech-to-speech`，使用 Apache-2.0 许可证。数字人使用 FasterLivePortrait-MLX、LivePortrait 和 MuseTalk 1.5 的本地运行组件，使用前请同时查看其上游许可证和模型说明。发布修改版本时请保留 [`LICENSE`](./LICENSE) 和上游版权信息。
+项目主体来自 Hugging Face `speech-to-speech`，使用 Apache-2.0 许可证。数字人使用 FasterLivePortrait-MLX 和 LivePortrait 的本地运行组件，使用前请同时查看其上游许可证和模型说明。发布修改版本时请保留 [`LICENSE`](./LICENSE) 和上游版权信息。

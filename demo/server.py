@@ -80,7 +80,6 @@ if SPEECH_TO_SPEECH_URL:
 # Optional host-side MLX portrait service. The browser only calls the
 # same-origin proxy, so Docker's host name stays server-side.
 AVATAR_URL = os.environ.get("AVATAR_URL", "").strip()
-AVATAR_MAX_AUDIO_BYTES = int(os.environ.get("AVATAR_MAX_AUDIO_BYTES", str(4 * 1024 * 1024)))
 # HF injects SPACE_ID ("owner/space") into every Space runtime; it's absent
 # locally and on a plain `docker run`. We meter conversation time ONLY on the
 # deployed Space — i.e. when BOTH the LB is configured AND we're on a Space.
@@ -274,40 +273,24 @@ async def avatar_idle(character: str, request: Request):
     )
 
 
-@app.post("/api/avatar/lipsync")
-async def avatar_lipsync(request: Request, character: str = "xiaoman", start_frame: int = 0):
-    """Render one short speech chunk without stopping the idle stream."""
+@app.get("/api/avatar/viseme/{character}/{level}")
+async def avatar_viseme(character: str, level: int):
+    """Proxy one pre-rendered high-resolution mouth pose."""
     if not AVATAR_URL:
         raise HTTPException(status_code=404, detail="Avatar service is disabled")
-    audio = await request.body()
-    if not audio:
-        raise HTTPException(status_code=400, detail="WAV body is empty")
-    if len(audio) > AVATAR_MAX_AUDIO_BYTES:
-        raise HTTPException(status_code=413, detail="WAV body is too large")
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0)) as http:
-            response = await http.post(
-                f"{AVATAR_URL.rstrip('/')}/lipsync",
-                params={"character": character, "start_frame": max(0, start_frame)},
-                content=audio,
-                headers={"Content-Type": "audio/wav"},
-            )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=5.0)) as http:
+            response = await http.get(f"{AVATAR_URL.rstrip('/')}/viseme/{character}/{level}")
     except httpx.RequestError as exc:
-        raise HTTPException(status_code=503, detail="Avatar lip-sync request failed") from exc
+        raise HTTPException(status_code=503, detail="Avatar viseme is unavailable") from exc
     if response.status_code != 200:
-        detail = response.text[:500] or "Avatar lip-sync failed"
+        detail = response.text[:500] or "Avatar viseme failed"
         raise HTTPException(status_code=502, detail=detail)
-    forwarded = {
-        name.title(): value
-        for name in (
-            "x-avatar-render-seconds",
-            "x-avatar-start-frame",
-            "x-avatar-next-frame",
-            "x-avatar-frame-count",
-        )
-        if (value := response.headers.get(name))
-    }
-    return Response(content=response.content, media_type="video/mp4", headers=forwarded)
+    return Response(
+        content=response.content,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.get("/api/me")

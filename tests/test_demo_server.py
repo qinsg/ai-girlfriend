@@ -58,7 +58,7 @@ async def test_avatar_idle_proxies_browser_range_requests(monkeypatch):
     )
 
 
-async def test_avatar_lipsync_proxies_chunk_position_headers(monkeypatch):
+async def test_avatar_viseme_proxies_transparent_png(monkeypatch):
     calls = []
 
     class FakeAsyncClient:
@@ -71,33 +71,22 @@ async def test_avatar_lipsync_proxies_chunk_position_headers(monkeypatch):
         async def __aexit__(self, *args):
             pass
 
-        async def post(self, url, **kwargs):
+        async def get(self, url, **kwargs):
             calls.append((url, kwargs))
             return httpx.Response(
                 200,
-                content=b"lip-chunk",
-                headers={
-                    "X-Avatar-Render-Seconds": "0.820",
-                    "X-Avatar-Start-Frame": "42",
-                    "X-Avatar-Next-Frame": "67",
-                    "X-Avatar-Frame-Count": "25",
-                },
+                content=b"transparent-mouth-png",
             )
-
-    class FakeRequest:
-        async def body(self):
-            return b"RIFF-avatar-test"
 
     monkeypatch.setattr(demo_server, "AVATAR_URL", "http://host.docker.internal:9871")
     monkeypatch.setattr(demo_server.httpx, "AsyncClient", FakeAsyncClient)
 
-    response = await demo_server.avatar_lipsync(FakeRequest(), character="xiaoxue", start_frame=42)
+    response = await demo_server.avatar_viseme(character="xiaoxue", level=4)
 
-    assert response.body == b"lip-chunk"
-    assert response.headers["x-avatar-next-frame"] == "67"
-    assert response.headers["x-avatar-frame-count"] == "25"
-    assert calls[1][0] == "http://host.docker.internal:9871/lipsync"
-    assert calls[1][1]["params"] == {"character": "xiaoxue", "start_frame": 42}
+    assert response.body == b"transparent-mouth-png"
+    assert response.media_type == "image/png"
+    assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert calls[1] == ("http://host.docker.internal:9871/viseme/xiaoxue/4", {})
 
 
 def _mock_whoami(monkeypatch, payload):

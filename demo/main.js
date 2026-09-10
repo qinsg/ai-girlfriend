@@ -17,11 +17,11 @@
  * @typedef {S2sRealtimeClient} RealtimeClient
  */
 
-import { S2sRealtimeClient } from "./s2s-realtime-client.js?v=audio-24k-v5";
+import { S2sRealtimeClient } from "./s2s-realtime-client.js?v=audio-24k-v12";
 import { $, truncateError, DEBUG } from "./ui/dom.js";
 import { ChatView } from "./ui/chat.js";
 import { Account } from "./ui/account.js";
-import { AvatarView } from "./ui/avatar.js?v=audio-24k-v5";
+import { AvatarView } from "./ui/avatar.js?v=audio-24k-v12";
 
 const DEFAULT_VOICE = "Serena";
 const DEFAULT_INSTRUCTIONS = "你正在进行简短自然的中文语音对话。";
@@ -173,15 +173,15 @@ function saveTools() {
 
 /** @type {Record<AppState, { caption: string; disabled: boolean }>} */
 const STATE_VIEWS = {
-  idle:            { caption: "Tap to start",  disabled: false },
-  connecting:      { caption: "Connecting",    disabled: true  },
-  queued:          { caption: "Finding you a spot…", disabled: true },
-  "your-turn":     { caption: "You're up! 🎉", disabled: true  },
+  idle:            { caption: "开始通话",       disabled: false },
+  connecting:      { caption: "正在连接",       disabled: true  },
+  queued:          { caption: "正在等待空闲服务", disabled: true },
+  "your-turn":     { caption: "可以开始通话了", disabled: true  },
   listening:       { caption: "",              disabled: false },
   "user-speaking": { caption: "",              disabled: false },
   processing:      { caption: "",              disabled: false },
   "ai-speaking":   { caption: "",              disabled: false },
-  error:           { caption: "Tap to retry",  disabled: false },
+  error:           { caption: "连接失败，点击重试", disabled: false },
 };
 
 /** @type {Record<AppState, string>} */
@@ -489,8 +489,7 @@ function setState(next) {
 
   // Warm reassurance under the terse position, only while waiting in line.
   if (next === "queued") {
-    circleSubcaption.textContent =
-      "Sorry, we overhugged! 🤗 Every slot is busy, so we saved you a spot. Hang tight, you're moving up.";
+    circleSubcaption.textContent = "当前服务繁忙，已为你保留排队位置。";
     circleSubcaption.hidden = false;
   } else {
     circleSubcaption.hidden = true;
@@ -1569,7 +1568,10 @@ async function doStart(audioContext = null) {
     acquireMic: acquireMicStream,
     tools: activeToolDefs(),
     audioOutputId: settings.audioOutputId || "",
-    deferOutputAudio: avatarConfigured && transport === "ws",
+    // Audio drives cached LivePortrait mouth poses directly from the output
+    // analyser. It must never wait for a per-utterance neural video render.
+    deferOutputAudio: false,
+    captureOutputAudio: false,
     executeTool: async ({ name, arguments: args, callId }) => {
       chat.onToolCall(name);
       const result = await runTool(name, args, callId);
@@ -1616,6 +1618,7 @@ async function doStart(audioContext = null) {
   c.addEventListener("status", (e) => {
     const detail = /** @type {CustomEvent<{ status: string }>} */ (e).detail;
     onClientStatus(detail.status);
+    avatar.setSpeaking(detail.status === "ai-speaking");
     if (detail.status === "ai-speaking") chat.onAssistantActivity();
   });
   c.addEventListener("transcript", (e) => {
@@ -1639,16 +1642,7 @@ async function doStart(audioContext = null) {
   c.addEventListener("response-finished", (e) => {
     const detail = /** @type {CustomEvent<{ responseId: string; status: string; audible?: boolean; transcript?: string }>} */ (e).detail;
     chat.onResponseFinished(detail);
-  });
-  c.addEventListener("output-audio-chunk", (e) => {
-    const detail = /** @type {CustomEvent<{audio: Blob; pcm: ArrayBuffer; responseId: string; chunkIndex: number; final: boolean}>} */ (e).detail;
-    avatar.renderChunk(detail, (pcm) => {
-      if (client === c) c.playPcm16(pcm);
-    });
-  });
-  c.addEventListener("output-audio-stream-end", (e) => {
-    const detail = /** @type {CustomEvent<{responseId: string}>} */ (e).detail;
-    avatar.finishResponse(detail.responseId);
+    avatar.setSpeaking(false);
   });
   c.addEventListener("audio-interrupted", () => avatar.cancel());
   c.addEventListener("audio-state", (e) => {

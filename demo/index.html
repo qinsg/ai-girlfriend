@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>本地赛博 AI 女友 · speech-to-speech</title>
-    <link rel="stylesheet" href="style.css?v=audio-24k-v5" />
+    <link rel="stylesheet" href="style.css?v=audio-24k-v12" />
   </head>
   <!--
     `booting` disables transitions/animations until the first paint commits.
@@ -80,16 +80,18 @@
             loop
             autoplay
           ></video>
-          <video id="avatar-speech-video" class="avatar-media avatar-speech-video" playsinline></video>
+          <img id="avatar-viseme-image" class="avatar-media avatar-viseme-image" alt="" aria-hidden="true" />
           <div class="avatar-vignette" aria-hidden="true"></div>
           <div class="avatar-meta">
             <span id="avatar-name" class="avatar-name">小满</span>
             <span id="avatar-status" class="avatar-status">本地数字人</span>
           </div>
-        </section>
 
-        <section class="voice-panel" aria-label="语音控制">
-        <div class="orb-wrap">
+          <section class="voice-panel" aria-label="语音控制">
+          <p id="circle-caption" class="circle-caption" role="status">点击开始语音</p>
+          <p id="circle-subcaption" class="circle-subcaption" hidden></p>
+
+          <div class="orb-wrap">
           <div id="mic-gate" class="mic-gate">
             <svg id="mic-gate-arc" class="mic-gate-arc" viewBox="0 0 100 100" aria-hidden="true">
               <path id="mga-track" class="mga-track" fill="none" />
@@ -107,7 +109,7 @@
             id="main-circle"
             class="circle state-idle"
             type="button"
-            aria-label="Start voice conversation"
+            aria-label="开始语音通话"
           >
             <span class="circle-glow" aria-hidden="true"></span>
             <span class="circle-ring" aria-hidden="true"></span>
@@ -143,22 +145,16 @@
             </span>
           </button>
 
-          <button id="stop-btn" class="side-btn" type="button" aria-label="End" title="End" aria-hidden="true">
+          <button id="stop-btn" class="side-btn" type="button" aria-label="结束通话" title="结束通话" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
           </button>
-        </div>
+          </div>
 
-        <p id="circle-caption" class="circle-caption" role="status">点击开始语音</p>
-        <p id="circle-subcaption" class="circle-subcaption" hidden></p>
-
-        <div id="queue-actions" class="queue-actions" hidden>
-          <button id="join-queue-btn" class="join-queue-btn" type="button" hidden>
-            Join now
-          </button>
-          <button id="leave-queue-btn" class="leave-queue-btn" type="button" hidden>
-            Leave queue
-          </button>
-        </div>
+          <div id="queue-actions" class="queue-actions" hidden>
+            <button id="join-queue-btn" class="join-queue-btn" type="button" hidden>立即加入</button>
+            <button id="leave-queue-btn" class="leave-queue-btn" type="button" hidden>退出排队</button>
+          </div>
+          </section>
         </section>
       </main>
 
@@ -432,6 +428,6 @@
     </dialog>
 
     <script src="vendor/openai-realtime-agents.umd.js"></script>
-    <script type="module" src="main.js?v=audio-24k-v5"></script>
+    <script type="module" src="main.js?v=audio-24k-v12"></script>
   </body>
 </html>

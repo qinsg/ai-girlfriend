@@ -272,7 +272,7 @@ def test_audio_asset_version_propagates_to_the_worklets():
     main = (REPO_ROOT / "demo/main.js").read_text()
     client = (REPO_ROOT / "demo/s2s-realtime-client.js").read_text()
 
-    version = "audio-24k-v5"
+    version = "audio-24k-v12"
     assert f"main.js?v={version}" in index
     assert f"s2s-realtime-client.js?v={version}" in main
     assert f'AUDIO_WORKLET_VERSION = "{version}"' in client
@@ -342,6 +342,43 @@ if (wav.getUint32(24, true) !== 24000 || wav.getUint32(40, true) !== 48000) {
     )
 
 
+def test_avatar_capture_mirrors_chunks_without_deferring_primary_audio():
+    _run_node(
+        """
+globalThis.localStorage = { getItem() { return null; } };
+globalThis.CustomEvent = class CustomEvent extends Event {
+  constructor(type, init = {}) {
+    super(type);
+    this.detail = init.detail;
+  }
+};
+const { S2sRealtimeClient } = await import("./demo/s2s-realtime-client.js");
+const client = new S2sRealtimeClient({
+  transport: "websocket",
+  voice: "Serena",
+  instructions: "Be helpful.",
+  directUrl: "ws://unused",
+  deferOutputAudio: false,
+  captureOutputAudio: true,
+});
+const playback = [];
+client._playbackNode = { port: { postMessage(message) { playback.push(message); } } };
+client._ctx = { state: "running" };
+
+const avatarChunks = [];
+client.addEventListener("output-audio-chunk", (event) => avatarChunks.push(event.detail));
+client._onAudio({ data: new Uint8Array(48000).buffer, responseId: "resp_parallel" });
+
+if (playback.length !== 1 || playback[0].kind !== "audio") {
+  throw new Error("primary PCM did not enter continuous playback immediately");
+}
+if (avatarChunks.length !== 1 || avatarChunks[0].pcm.byteLength !== 48000) {
+  throw new Error("avatar did not receive the mirrored one-second chunk");
+}
+"""
+    )
+
+
 def test_mic_capture_reports_and_resamples_to_24khz_without_changing_pitch():
     _run_node(
         """
@@ -371,7 +408,7 @@ const processor = new CaptureProcessor({
   processorOptions: {
     chunkMs: 40,
     targetRate: 24000,
-    version: "audio-24k-v5",
+    version: "audio-24k-v12",
   },
 });
 processor.port.onmessage({ data: { kind: "probe" } });
@@ -381,7 +418,7 @@ if (!config) throw new Error("capture worklet did not report its configuration")
 if (config.inputRate !== 48000 || config.outputRate !== 24000) {
   throw new Error(`unexpected sample-rate handshake: ${JSON.stringify(config)}`);
 }
-if (config.version !== "audio-24k-v5") {
+if (config.version !== "audio-24k-v12") {
   throw new Error(`unexpected worklet version: ${config.version}`);
 }
 

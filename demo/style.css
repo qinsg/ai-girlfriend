@@ -138,11 +138,26 @@ a:hover {
   display: flex;
   /* Top-align so the right control cluster sits up with the title instead of
    * floating to the vertical middle of the tall identity block. */
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  padding: 18px 28px;
+  padding: 18px clamp(18px, 3vw, 36px) 12px;
   /* Default stacking (below the conversation panel, z 200) so the panel drawer
    * covers the controls when it's open. */
+}
+
+/* Keep the call screen focused. Attribution and technical detail remain
+ * available in About and the footer instead of competing with the caller. */
+.topbar .ident-blurb,
+.topbar .ident-meta,
+.topbar .about-btn {
+  display: none;
+}
+
+.topbar .ident-title {
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -0.02em;
+  border: 0;
 }
 
 .brand {
@@ -600,36 +615,41 @@ a:hover {
 /* ─── Stage ───────────────────────────────────────────────────────────── */
 
 .stage {
-  display: grid;
-  grid-template-columns: minmax(280px, 0.72fr) minmax(360px, 1fr);
-  align-items: center;
+  display: flex;
+  align-items: stretch;
   justify-content: center;
-  width: min(1240px, 100%);
+  width: min(1120px, 100%);
   margin: 0 auto;
-  padding: 20px 32px 28px;
-  gap: clamp(24px, 4vw, 64px);
+  padding: 12px clamp(18px, 3vw, 36px) 18px;
   /* Let the stage shrink inside the grid's 1fr row so a height-capped orb can
    * give back space rather than forcing the whole app to overflow. */
   min-height: 0;
 }
 
 .voice-panel {
+  position: absolute;
+  z-index: 8;
+  left: 50%;
+  bottom: 22px;
+  width: min(560px, calc(100% - 32px));
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 18px;
+  justify-content: flex-end;
+  gap: 10px;
   min-width: 0;
+  pointer-events: none;
 }
 
 .avatar-card {
   position: relative;
   justify-self: stretch;
   width: 100%;
-  height: min(68vh, 690px);
-  min-height: 360px;
+  height: min(76vh, 760px);
+  min-height: 480px;
   overflow: hidden;
-  border-radius: 30px;
+  border-radius: 28px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   background: rgba(10, 12, 19, 0.82);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.46), inset 0 1px rgba(255, 255, 255, 0.08);
@@ -663,14 +683,18 @@ a:hover {
   opacity: 1;
 }
 
-.avatar-speech-video {
+.avatar-viseme-image {
   z-index: 3;
   opacity: 0;
   transition: opacity 0.1s ease;
   background: transparent;
+  /* Each pose is an RGBA mouth patch masked in source-image coordinates.
+   * Because it shares object-fit/object-position with the idle video, it stays
+   * aligned at every card aspect ratio instead of drifting toward the nose. */
+  animation: avatar-idle 8s ease-in-out infinite alternate;
 }
 
-.avatar-speech-video.playing {
+.avatar-viseme-image.active {
   opacity: 1;
 }
 
@@ -691,25 +715,33 @@ a:hover {
   z-index: 4;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(180deg, transparent 56%, rgba(4, 5, 9, 0.72) 100%);
+  background:
+    linear-gradient(180deg, rgba(4, 5, 9, 0.22) 0%, transparent 22%),
+    linear-gradient(180deg, transparent 48%, rgba(4, 5, 9, 0.9) 100%);
 }
 
 .avatar-meta {
   position: absolute;
   z-index: 6;
-  left: 20px;
-  right: 20px;
-  bottom: 17px;
+  left: 22px;
+  right: auto;
+  top: 20px;
+  bottom: auto;
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(8, 10, 16, 0.48);
+  backdrop-filter: blur(14px);
   color: #fff;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
 }
 
 .avatar-name {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 650;
 }
 
@@ -718,6 +750,17 @@ a:hover {
   font-size: 10px;
   letter-spacing: 0.08em;
   color: rgba(255, 255, 255, 0.7);
+}
+
+.avatar-status::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--success) 65%, transparent);
 }
 
 @keyframes avatar-idle {
@@ -738,11 +781,19 @@ a:hover {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: clamp(18px, 3vw, 32px);
+  gap: 16px;
+  min-height: 78px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  background: rgba(10, 12, 19, 0.68);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.38), inset 0 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px) saturate(1.15);
+  pointer-events: auto;
 }
 
 .voice-panel .circle {
-  width: clamp(150px, min(26vw, 40vh), 270px);
+  width: 58px;
 }
 
 .circle {
@@ -751,7 +802,7 @@ a:hover {
    * the orb shrinks instead of overflowing, so the page stays scroll-free even
    * when embedded in a small box. On normal screens the 320px cap still wins,
    * so the desktop size is unchanged. */
-  width: clamp(140px, min(38vw, 46vh), 320px);
+  width: 58px;
   aspect-ratio: 1 / 1;
   border-radius: 50%;
   border: none;
@@ -788,8 +839,8 @@ a:hover {
   inset: 0;
   border-radius: 50%;
   background: radial-gradient(circle at center, var(--glow, var(--accent)) 0%, transparent 65%);
-  filter: blur(28px);
-  opacity: 0.5;
+  filter: blur(14px);
+  opacity: 0.38;
   transform: scale(1);
   transition: opacity 0.25s, background 0.25s, transform 1.4s ease-in-out;
   pointer-events: none;
@@ -808,22 +859,22 @@ a:hover {
   transition: opacity 0.4s ease, border-color 0.4s ease, transform 0.3s ease;
 }
 .circle-ring {
-  width: 82%;
-  height: 82%;
+  width: 94%;
+  height: 94%;
   border: 1.5px solid color-mix(in srgb, var(--glow, var(--accent)) 35%, transparent);
   opacity: 0.35;
 }
 .circle-ring-outer {
-  width: 94%;
-  height: 94%;
+  width: 108%;
+  height: 108%;
   border: 1px solid color-mix(in srgb, var(--glow, var(--accent)) 22%, transparent);
   opacity: 0;
 }
 
 .circle-core {
   position: relative;
-  width: 72%;
-  height: 72%;
+  width: 88%;
+  height: 88%;
   border-radius: 50%;
   background: radial-gradient(
     circle at 35% 28%,
@@ -939,6 +990,7 @@ a:hover {
  * less confusing than reusing the mic-bars (which viewers would read
  * as "you are speaking"). */
 .state-signed-out .ind-connect,
+.state-idle .ind-mic,
 .state-authenticated .ind-mic,
 .state-ready .ind-mic,
 .state-connecting .ind-spinner,
@@ -985,16 +1037,20 @@ a:hover {
  * transitional states (see STATE_VIEWS). During a live conversation the
  * orb alone carries the state so we collapse this row entirely. */
 .circle-caption {
-  margin: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  margin: 0 0 2px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.9);
   min-height: 1.2em;
   text-align: center;
-  opacity: 0.75;
+  opacity: 1;
+  border-radius: 999px;
+  background: rgba(8, 10, 16, 0.5);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(12px);
+  pointer-events: none;
   transition: opacity 0.25s ease, color 0.25s ease, transform 0.25s ease,
     min-height 0.25s ease;
 }
@@ -1017,13 +1073,17 @@ a:hover {
 /* Warm, human line under the mono caption — sentence case, only while queued.
  * The caption keeps the terse position; this reassures. */
 .circle-subcaption {
-  margin: 8px 0 0;
+  margin: 0;
+  padding: 8px 12px;
   max-width: 32ch;
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--text-dim);
   text-align: center;
   text-wrap: balance;
+  border-radius: 12px;
+  background: rgba(8, 10, 16, 0.62);
+  backdrop-filter: blur(12px);
   transition: opacity 0.25s ease;
 }
 .circle-subcaption[hidden] { display: none; }
@@ -1031,11 +1091,12 @@ a:hover {
 /* Queue actions sit under the caption: "Join now" (primary, only when it's your
  * turn) stacked above the quiet "Leave queue" escape hatch. */
 .queue-actions {
-  margin-top: 16px;
+  margin-top: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
+  pointer-events: auto;
 }
 .queue-actions[hidden] { display: none; }
 
@@ -1161,8 +1222,8 @@ a:hover {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 80px;
-  height: 80px;
+  width: 70px;
+  height: 70px;
   transform: translate(-50%, -50%);
   pointer-events: none; /* only the hit-path below catches drags */
   opacity: 0;
@@ -1210,7 +1271,7 @@ body.rtc-live .mic-gate-arc { display: none; }
 .side-btn {
   flex: none;
   width: 52px;
-  height: 52px;
+  height: 54px;
   border-radius: 50%;
   border: 1px solid var(--border-strong);
   /* Brighter background so the buttons actually stand out against the
@@ -1265,8 +1326,13 @@ body.rtc-live .mic-gate-arc { display: none; }
 .orb-wrap.live .side-btn {
   opacity: 1;
   transform: scale(1);
-  width: 52px;
+  width: 54px;
   pointer-events: auto;
+}
+
+#stop-btn {
+  border-color: color-mix(in srgb, var(--error) 65%, transparent);
+  background: color-mix(in srgb, var(--error) 72%, #42121a);
 }
 
 /* Disable every transition / animation during the first paint so the
@@ -1333,6 +1399,7 @@ body.booting *::after {
 /* ─── State-specific colors ──────────────────────────────────────────── */
 
 .circle.state-signed-out   { --glow: #8b7dff; }
+.circle.state-idle         { --glow: var(--success); }
 .circle.state-authenticated,
 .circle.state-ready        { --glow: #34d399; }
 .circle.state-connecting,
@@ -2844,7 +2911,7 @@ body.cam-on .footer {
 
   .modal-header h2 { font-size: 17px; }
 
-  .ident-title { font-size: 24px; }
+  .topbar .ident-title { font-size: 20px; }
 }
 
 /* ─── Short viewports: fit without a vertical scrollbar ─────────────────────
@@ -2860,12 +2927,12 @@ body.cam-on .footer {
 @media (max-height: 780px) {
   .topbar { padding: 14px 24px; }
   .ident { gap: 5px; }
-  .ident-title { font-size: 20px; }
+  .topbar .ident-title { font-size: 18px; }
   .ident-blurb { font-size: 13.5px; line-height: 1.4; }
   .ident-meta { gap: 5px; font-size: 13px; }
-  .stage { padding: 12px 20px 16px; gap: 12px; }
+  .stage { padding: 8px 20px 12px; }
   .footer { padding: 8px 24px 10px; }
-  .circle { width: clamp(140px, min(38vw, 44vh), 300px); }
+  .circle { width: 58px; }
 }
 
 @media (max-height: 560px) {
@@ -2877,27 +2944,27 @@ body.cam-on .footer {
   .ident-blurb { display: none; }
   .stage { padding: 8px 14px 10px; gap: 8px; }
   .footer { display: none; }
-  .circle { width: clamp(120px, min(50vw, 46vh), 240px); }
+  .circle { width: 54px; }
 }
 
 @media (max-width: 760px) {
   .stage {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(250px, 1fr) auto;
     width: 100%;
-    padding: 10px 14px 18px;
-    gap: 14px;
+    padding: 8px 12px 12px;
   }
 
   .avatar-card {
-    width: min(92vw, 520px);
-    height: min(52vh, 480px);
-    min-height: 250px;
+    width: 100%;
+    height: calc(100dvh - 132px);
+    min-height: 440px;
+    max-height: none;
     justify-self: center;
-    border-radius: 24px;
+    border-radius: 22px;
   }
 
   .voice-panel {
+    bottom: max(16px, env(safe-area-inset-bottom));
+    width: calc(100% - 24px);
     gap: 8px;
   }
 
@@ -2908,30 +2975,32 @@ body.cam-on .footer {
   }
 
   .voice-panel .circle {
-    width: clamp(108px, min(34vw, 20vh), 150px);
+    width: 56px;
   }
 
   .avatar-meta {
-    left: 16px;
-    right: 16px;
-    bottom: 13px;
+    left: 14px;
+    top: 14px;
   }
+
+  .footer { display: none; }
 }
 
 @media (max-height: 620px) and (min-width: 761px) {
   .avatar-card {
-    height: min(62vh, 460px);
-    min-height: 280px;
+    height: min(72vh, 500px);
+    min-height: 340px;
   }
 
   .voice-panel .circle {
-    width: clamp(130px, min(24vw, 34vh), 220px);
+    width: 54px;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .avatar-image,
   .avatar-idle-video,
+  .avatar-viseme-image,
   .avatar-card.preparing-speech::after {
     animation: none;
   }
